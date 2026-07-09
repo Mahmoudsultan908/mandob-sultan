@@ -2730,10 +2730,49 @@ function openMaps(lat,lng){ window.open(`https://www.google.com/maps?q=${lat},${
 // ══════════════════════════════════════════════════════════════════
 function showRoutePage(){
   const wd = new Date().getDay();
-  const todayIds = new Set(getTodayRouteIds());
-  const hasTemplate = !!(ROUTE.templates[wd] && ROUTE.templates[wd].length);
+  const todayIds = getTodayRouteIds();
+  const todayStores = STORES.filter(s=>todayIds.includes(s.id));
+
+  const pinnedDaysHtml = WEEKDAY_NAMES.map((name,i)=>{
+    const ids = ROUTE.templates[i]||[];
+    if(!ids.length) return '';
+    const names = STORES.filter(s=>ids.includes(s.id)).map(s=>s.name).join('، ') || '—';
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--bdr);cursor:pointer" onclick="editRouteDay(${i})">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-weight:900;color:var(--blue)">📌 ${name}${i===wd?' (النهاردة)':''}</span>
+        <span style="font-size:12px;color:var(--t3)">${ids.length} محل ←</span>
+      </div>
+      <div style="font-size:12px;color:var(--t2);margin-top:3px">${names}</div>
+    </div>`;
+  }).join('');
+  const hasPinned = Object.values(ROUTE.templates).some(ids=>ids?.length);
+
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div style="font-size:18px;font-weight:900;color:var(--blue)">🗺️ خط السير</div>
+      <span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="sec" style="margin-bottom:14px">
+      <div class="st">📍 محلات النهاردة — ${WEEKDAY_NAMES[wd]} (${todayStores.length})</div>
+      ${todayStores.length ? todayStores.map(s=>`
+        <div style="padding:8px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:14px;font-weight:700">${s.name}</span>
+          ${s.address?`<span style="font-size:11px;color:var(--t3)">${s.address}</span>`:''}
+        </div>`).join('') : '<div style="color:var(--t3);text-align:center;padding:12px;font-size:13px">لسه مافيش محلات مختارة النهاردة</div>'}
+      <button class="btn btn-o btn-lg" style="width:100%;margin-top:10px" onclick="editRouteDay(${wd})">✏️ تعديل محلات النهاردة</button>
+    </div>
+    <div class="sec">
+      <div class="st">📌 الأيام المثبت فيها خط سير</div>
+      ${hasPinned ? pinnedDaysHtml : '<div style="color:var(--t3);text-align:center;padding:12px;font-size:13px">مفيش أي يوم متثبت لسه — عدّل يوم النهاردة ودوس "تثبيت"</div>'}
+    </div>`);
+}
+
+function editRouteDay(wd){
+  const isToday = wd === new Date().getDay();
+  const currentIds = isToday ? getTodayRouteIds() : (ROUTE.templates[wd]||[]);
+  const idSet = new Set(currentIds);
   const rows = STORES.map(s=>{
-    const checked = todayIds.has(s.id);
+    const checked = idSet.has(s.id);
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr)">
       <input type="checkbox" data-route-store="${s.id}" ${checked?'checked':''} style="width:18px;height:18px;flex-shrink:0">
       <span style="flex:1;font-size:14px;font-weight:700">${s.name}</span>
@@ -2743,34 +2782,32 @@ function showRoutePage(){
 
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:17px;font-weight:900;color:var(--blue)">🗺️ خط السير — ${WEEKDAY_NAMES[wd]}</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
+      <div style="font-size:17px;font-weight:900;color:var(--blue)">✏️ تعديل خط سير ${WEEKDAY_NAMES[wd]}</div>
+      <span class="m-close" onclick="showRoutePage()">✕</span>
     </div>
-    <div class="al al-b" style="margin-bottom:10px">اختار المحلات/العملاء المفروض تعدي عليهم النهاردة.${hasTemplate?` (فيه خط سير مثبّت أصلاً ليوم ${WEEKDAY_NAMES[wd]})`:''}</div>
     <div class="sec" style="max-height:50vh;overflow-y:auto;margin-bottom:12px">${rows}</div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-g btn-lg" style="flex:1" onclick="saveTodayRoute(false)">✅ حفظ لليوم بس</button>
-      <button class="btn btn-gold btn-lg" style="flex:1" onclick="saveTodayRoute(true)">📌 ثبّت كل ${WEEKDAY_NAMES[wd]}</button>
-    </div>
-    ${hasTemplate?`<button class="btn btn-r btn-lg" style="width:100%;margin-top:8px" onclick="requireAdmin('مسح خط سير ثابت',clearRouteTemplate)">🗑️ امسح التثبيت الخاص بـ ${WEEKDAY_NAMES[wd]}</button>`:''}`);
+    <button class="btn btn-gold btn-lg" style="width:100%;margin-bottom:8px" onclick="saveRouteDay(${wd})">📌 حفظ وتثبيت خط سير ${WEEKDAY_NAMES[wd]}</button>
+    ${(ROUTE.templates[wd]||[]).length?`<button class="btn btn-r btn-lg" style="width:100%" onclick="requireAdmin('مسح خط سير',()=>clearRouteDay(${wd}))">🗑️ امسح تثبيت ${WEEKDAY_NAMES[wd]}</button>`:''}`);
 }
-function saveTodayRoute(pin){
+
+function saveRouteDay(wd){
   const ids=[...document.querySelectorAll('[data-route-store]')].filter(c=>c.checked).map(c=>c.dataset.routeStore);
-  const wd = new Date().getDay();
-  ROUTE.overrides[TODAY]=ids;
-  if(pin) ROUTE.templates[wd]=ids;
+  ROUTE.templates[wd]=ids;
+  if(wd===new Date().getDay()) ROUTE.overrides[TODAY]=ids;
   saveRoute();
-  auditLog('خط السير', `${WEEKDAY_NAMES[wd]} — ${ids.length} محل${pin?' (تثبيت)':''}`);
-  toast(pin?`📌 اتثبّت خط سير ${WEEKDAY_NAMES[wd]}`:'✅ اتحفظ لليوم بس');
-  closeModal();
+  auditLog('خط السير', `${WEEKDAY_NAMES[wd]} — ${ids.length} محل (تثبيت)`);
+  toast(`📌 اتثبّت خط سير ${WEEKDAY_NAMES[wd]} — ${ids.length} محل`);
+  showRoutePage();
   r_stores();
 }
-function clearRouteTemplate(){
-  const wd = new Date().getDay();
+
+function clearRouteDay(wd){
   delete ROUTE.templates[wd];
+  if(wd===new Date().getDay()) delete ROUTE.overrides[TODAY];
   saveRoute();
-  toast(`🗑️ اتمسح التثبيت الخاص بـ ${WEEKDAY_NAMES[wd]}`);
+  toast(`🗑️ اتمسح خط سير ${WEEKDAY_NAMES[wd]}`);
   showRoutePage();
+  r_stores();
 }
 
 // ── إضافة دين قديم ────────────────────────────────────────────────
