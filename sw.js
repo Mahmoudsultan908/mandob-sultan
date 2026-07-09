@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v10 (خط السير: صفحة عرض شاملة + تعديل لكل يوم)
-const CACHE = 'mandob-sultan-v10';
+// مندوب سلطان — Service Worker v11 (خط السير كصفحة رئيسية بنفس شكل المحلات + تبويب أيام)
+const CACHE = 'mandob-sultan-v11';
 const ASSETS = [
   './',
   './index.html',

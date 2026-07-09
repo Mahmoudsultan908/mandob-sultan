@@ -345,12 +345,14 @@ function pinTap(e,v){}
   <div id="pg-orders"    class="page"></div>
   <div id="pg-more"      class="page"></div>
   <div id="pg-van"       class="page"></div>
+  <div id="pg-route"     class="page"></div>
 
-  <nav class="nav" style="grid-template-columns:repeat(9,1fr)">
+  <nav class="nav" style="grid-template-columns:repeat(10,1fr)">
     <button class="nb on"  onclick="go('sell',this)">     <span class="ni">🧾</span><span class="nl">بيع</span></button>
     <button class="nb"     onclick="go('ledger',this)">   <span class="ni">💰</span><span class="nl">كشف</span></button>
     <button class="nb"     onclick="go('goal',this)">     <span class="ni">🎯</span><span class="nl">الهدف</span></button>
     <button class="nb"     onclick="go('stores',this)">   <span class="ni">🏪</span><span class="nl">محلات</span></button>
+    <button class="nb"     onclick="go('route',this)">    <span class="ni">🗺️</span><span class="nl">الخط</span></button>
     <button class="nb"     onclick="go('customers',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
     <button class="nb"     onclick="go('offers',this)">   <span class="ni">🎁</span><span class="nl">عروض</span></button>
     <button class="nb"     onclick="go('orders',this)">   <span class="ni">📋</span><span class="nl">طلبات</span></button>
@@ -446,14 +448,12 @@ let sellLock      = false;
 let CUST_TAB      = 'pending'; // 'pending' | 'collected'
 let STORE_SEARCH_Q= '';
 let CUST_SEARCH_Q = '';
-let ROUTE = LS.g('route') || { templates:{}, overrides:{} };
+let ROUTE = LS.g('route') || { templates:{} };
 function saveRoute(){ LS.s('route', ROUTE); }
 const WEEKDAY_NAMES=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-function getTodayRouteIds(){
-  const wd = new Date().getDay();
-  if(ROUTE.overrides[TODAY]) return ROUTE.overrides[TODAY];
-  return ROUTE.templates[wd] || [];
-}
+const WEEKDAY_SHORT=['أحد','اتنين','تلات','أربع','خميس','جمعة','سبت'];
+function getTodayRouteIds(){ return ROUTE.templates[new Date().getDay()] || []; }
+let ROUTE_DAY_VIEW = new Date().getDay();
 
 function saveCart(){ LS.s('cart_'+TODAY, cart); }
 try{
@@ -1033,7 +1033,7 @@ function go(name,btn){
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('on'));
   document.getElementById('pg-'+name).classList.add('on');
   if(btn)btn.classList.add('on');
-  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,offers:r_offers,orders:r_orders,more:r_more}[name]||noop)();
+  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,offers:r_offers,orders:r_orders,more:r_more,route:r_route}[name]||noop)();
 }
 const noop=()=>{};
 
@@ -2558,6 +2558,37 @@ function saveGoal(){
 // ══════════════════════════════════════════════════════════════════
 // ── STORES PAGE ───────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════
+function storeCardHtml(s, i, opts){
+  opts = opts || {};
+  const tv=s.visits?.find(v=>v.date===TODAY);
+  const activeStatuses = tv?.statuses?.length ? tv.statuses : (tv?.status ? [tv.status] : []);
+  const st=tv?.status||'pending';
+  const cust=CUSTOMERS.find(c=>c.id===s.id);
+  const debt=(cust?.debt||0)+(s.oldDebt||0);
+  const inRoute = getTodayRouteIds().includes(s.id);
+  return `<div class="scard" ${inRoute?'style="border-color:var(--blue)"':''}>
+    <div class="scard-top">
+      <div style="flex:1">
+        <div class="scard-name">${inRoute?'🗺️ ':''}${s.name}</div>
+        ${s.phone?`<div class="scard-meta">📞 <a href="tel:${s.phone}" style="color:var(--blue);text-decoration:none">${s.phone}</a></div>`:''}
+        ${s.address?`<div class="scard-meta">📍 ${s.address}</div>`:''}
+        <div class="scard-meta">${tv?'زيارة اليوم ✓':'لم يُزر اليوم'}${debt>0?` — 🔴 عليه ${fmt(debt)} ج`:''}</div>
+      </div>
+      <span class="sstatus ss-${st}">${activeStatuses.length?activeStatuses.map(statusLbl).join(' + '):'معلق'}</span>
+    </div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
+      ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
+    </div>
+    ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
+    <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustHistory('${s.id}')">كشف حساب</button>
+      <button class="btn btn-o" style="flex:1;font-size:12px" onclick="showAddOldDebt('${s.id}','${s.name}')">دين قديم</button>
+      ${opts.removeFromRouteDay!=null?`<button class="btn btn-r" style="font-size:12px;padding:9px 9px" onclick="removeFromRouteDay('${s.id}',${opts.removeFromRouteDay})">➖ شيل</button>`:`<button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>`}
+    </div>
+  </div>`;
+}
+
 function r_stores(){
   const today=TODAY;
   const todayVisits=CDAY?.visits||[];
@@ -2584,39 +2615,11 @@ function r_stores(){
     <div class="pb"><div class="pf ${conv>=70?'pg-g':conv>=40?'pg-o':'pg-r'}" style="width:${conv}%"></div></div>
   </div>`:'';
 
-  const stHtml=STORES.map((s,i)=>{
-    const tv=s.visits?.find(v=>v.date===today);
-    const activeStatuses = tv?.statuses?.length ? tv.statuses : (tv?.status ? [tv.status] : []);
-    const st=tv?.status||'pending';
-    const cust=CUSTOMERS.find(c=>c.id===s.id);
-    const debt=(cust?.debt||0)+(s.oldDebt||0);
-    const inRoute = getTodayRouteIds().includes(s.id);
-    return `<div class="scard" ${inRoute?'style="border-color:var(--blue)"':''}>
-      <div class="scard-top">
-        <div style="flex:1">
-          <div class="scard-name">${inRoute?'🗺️ ':''}${s.name}</div>
-          ${s.phone?`<div class="scard-meta">📞 <a href="tel:${s.phone}" style="color:var(--blue);text-decoration:none">${s.phone}</a></div>`:''}
-          ${s.address?`<div class="scard-meta">📍 ${s.address}</div>`:''}
-          <div class="scard-meta">${tv?'زيارة اليوم ✓':'لم يُزر اليوم'}${debt>0?` — 🔴 عليه ${fmt(debt)} ج`:''}</div>
-        </div>
-        <span class="sstatus ss-${st}">${activeStatuses.length?activeStatuses.map(statusLbl).join(' + '):'معلق'}</span>
-      </div>
-      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
-        ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
-      </div>
-      ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
-      <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
-      <div style="display:flex;gap:6px">
-        <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustHistory('${s.id}')">كشف حساب</button>
-        <button class="btn btn-o" style="flex:1;font-size:12px" onclick="showAddOldDebt('${s.id}','${s.name}')">دين قديم</button>
-        <button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>
-      </div>
-    </div>`;
-  }).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا توجد محلات</div>';
+  const stHtml=STORES.map((s,i)=>storeCardHtml(s,i)).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا توجد محلات</div>';
 
   document.getElementById('pg-stores').innerHTML=`
   ${remHtml}${routeBar}
-  <button class="btn btn-blue btn-lg" style="width:100%;margin-bottom:12px" onclick="showRoutePage()">🗺️ خط السير (${getTodayRouteIds().length} محل النهاردة)</button>
+  <button class="btn btn-blue btn-lg" style="width:100%;margin-bottom:12px" onclick="ROUTE_DAY_VIEW=new Date().getDay();go('route')">🗺️ خط السير (${getTodayRouteIds().length} محل النهاردة)</button>
   <div class="sec">
     <div class="st">➕ إضافة محل / عميل</div>
     <div class="ig"><div class="il">اسم المحل *</div><input type="text" id="new-store" class="ifield" placeholder="اسم المحل أو العميل"></div>
@@ -2638,34 +2641,7 @@ function filterStores(q){
   const idxMap = STORES.map((s,i)=>({s,i}));
   const filtered = q ? idxMap.filter(({s})=>s.name.includes(q)||s.phone?.includes(q)||s.address?.includes(q)) : idxMap;
   const cnt=document.getElementById('store-count'); if(cnt) cnt.textContent=filtered.length;
-  list.innerHTML = filtered.map(({s,i})=>{
-    const tv=s.visits?.find(v=>v.date===TODAY);
-    const activeStatuses = tv?.statuses?.length ? tv.statuses : (tv?.status ? [tv.status] : []);
-    const st=tv?.status||'pending';
-    const cust=CUSTOMERS.find(c=>c.id===s.id);
-    const debt=(cust?.debt||0)+(s.oldDebt||0);
-    return `<div class="scard">
-      <div class="scard-top">
-        <div style="flex:1">
-          <div class="scard-name">${s.name}</div>
-          ${s.phone?`<div class="scard-meta">📞 <a href="tel:${s.phone}" style="color:var(--blue);text-decoration:none">${s.phone}</a></div>`:''}
-          ${s.address?`<div class="scard-meta">📍 ${s.address}</div>`:''}
-          <div class="scard-meta">${tv?'زيارة اليوم ✓':'لم يُزر اليوم'}${debt>0?` — 🔴 عليه ${fmt(debt)} ج`:''}</div>
-        </div>
-        <span class="sstatus ss-${st}">${activeStatuses.length?activeStatuses.map(statusLbl).join(' + '):'معلق'}</span>
-      </div>
-      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
-        ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
-      </div>
-      ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
-      <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
-      <div style="display:flex;gap:6px">
-        <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustHistory('${s.id}')">كشف حساب</button>
-        <button class="btn btn-o" style="flex:1;font-size:12px" onclick="showAddOldDebt('${s.id}','${s.name}')">دين قديم</button>
-        <button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>
-      </div>
-    </div>`;
-  }).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
+  list.innerHTML = filtered.map(({s,i})=>storeCardHtml(s,i)).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
 }
 
 const statusLbl=st=>({sold:'باع',collect:'حصّل',reject:'رفض',closed:'مغلق',pending:'معلق'}[st]||'معلق');
@@ -2726,88 +2702,60 @@ function delStore(i){ STORES.splice(i,1); LS.s('stores',STORES); r_stores(); }
 function openMaps(lat,lng){ window.open(`https://www.google.com/maps?q=${lat},${lng}`,'_blank'); }
 
 // ══════════════════════════════════════════════════════════════════
-// ── صفحة خط السير ────────────────────────────────────────────────
+// ── صفحة خط السير (نفس شكل صفحة المحلات، مفلترة باليوم) ─────────────
 // ══════════════════════════════════════════════════════════════════
-function showRoutePage(){
-  const wd = new Date().getDay();
-  const todayIds = getTodayRouteIds();
-  const todayStores = STORES.filter(s=>todayIds.includes(s.id));
-
-  const pinnedDaysHtml = WEEKDAY_NAMES.map((name,i)=>{
-    const ids = ROUTE.templates[i]||[];
-    if(!ids.length) return '';
-    const names = STORES.filter(s=>ids.includes(s.id)).map(s=>s.name).join('، ') || '—';
-    return `<div style="padding:10px 0;border-bottom:1px solid var(--bdr);cursor:pointer" onclick="editRouteDay(${i})">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-weight:900;color:var(--blue)">📌 ${name}${i===wd?' (النهاردة)':''}</span>
-        <span style="font-size:12px;color:var(--t3)">${ids.length} محل ←</span>
-      </div>
-      <div style="font-size:12px;color:var(--t2);margin-top:3px">${names}</div>
-    </div>`;
-  }).join('');
-  const hasPinned = Object.values(ROUTE.templates).some(ids=>ids?.length);
-
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:18px;font-weight:900;color:var(--blue)">🗺️ خط السير</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="sec" style="margin-bottom:14px">
-      <div class="st">📍 محلات النهاردة — ${WEEKDAY_NAMES[wd]} (${todayStores.length})</div>
-      ${todayStores.length ? todayStores.map(s=>`
-        <div style="padding:8px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center">
-          <span style="font-size:14px;font-weight:700">${s.name}</span>
-          ${s.address?`<span style="font-size:11px;color:var(--t3)">${s.address}</span>`:''}
-        </div>`).join('') : '<div style="color:var(--t3);text-align:center;padding:12px;font-size:13px">لسه مافيش محلات مختارة النهاردة</div>'}
-      <button class="btn btn-o btn-lg" style="width:100%;margin-top:10px" onclick="editRouteDay(${wd})">✏️ تعديل محلات النهاردة</button>
-    </div>
-    <div class="sec">
-      <div class="st">📌 الأيام المثبت فيها خط سير</div>
-      ${hasPinned ? pinnedDaysHtml : '<div style="color:var(--t3);text-align:center;padding:12px;font-size:13px">مفيش أي يوم متثبت لسه — عدّل يوم النهاردة ودوس "تثبيت"</div>'}
-    </div>`);
-}
-
-function editRouteDay(wd){
+function r_route(){
+  const wd = ROUTE_DAY_VIEW;
   const isToday = wd === new Date().getDay();
-  const currentIds = isToday ? getTodayRouteIds() : (ROUTE.templates[wd]||[]);
-  const idSet = new Set(currentIds);
-  const rows = STORES.map(s=>{
-    const checked = idSet.has(s.id);
-    return `<label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr)">
-      <input type="checkbox" data-route-store="${s.id}" ${checked?'checked':''} style="width:18px;height:18px;flex-shrink:0">
-      <span style="flex:1;font-size:14px;font-weight:700">${s.name}</span>
-      ${s.address?`<span style="font-size:11px;color:var(--t3)">${s.address}</span>`:''}
-    </label>`;
-  }).join('') || '<div style="text-align:center;color:var(--t3);padding:20px">لا توجد محلات — ضيف محلات الأول</div>';
+  const ids = ROUTE.templates[wd] || [];
+  const idSet = new Set(ids);
+  const routeStores = STORES.filter(s=>idSet.has(s.id));
+  const otherStores = STORES.filter(s=>!idSet.has(s.id));
 
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:17px;font-weight:900;color:var(--blue)">✏️ تعديل خط سير ${WEEKDAY_NAMES[wd]}</div>
-      <span class="m-close" onclick="showRoutePage()">✕</span>
+  const dayTabs = WEEKDAY_NAMES.map((name,i)=>{
+    const cnt=(ROUTE.templates[i]||[]).length;
+    return `<button class="btn ${i===wd?'btn-blue':'btn-b'}" style="flex:1;font-size:11px;padding:8px 2px" onclick="switchRouteDay(${i})">${WEEKDAY_SHORT[i]}${cnt?` (${cnt})`:''}</button>`;
+  }).join('');
+
+  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {removeFromRouteDay: wd})).join('')
+    || `<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">مفيش محلات في خط سير ${WEEKDAY_NAMES[wd]} لسه — ضيف من تحت</div>`;
+
+  const addOptionsHtml = otherStores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+
+  document.getElementById('pg-route').innerHTML=`
+  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${dayTabs}</div>
+  <div class="sec" style="margin-bottom:12px">
+    <div class="st">🗺️ خط سير ${WEEKDAY_NAMES[wd]}${isToday?' — النهاردة':''} (${routeStores.length} محل)</div>
+    <div style="display:flex;gap:8px">
+      <select id="route-add-sel" class="ifield" style="flex:1"><option value="">+ ضيف محل لخط سير ${WEEKDAY_NAMES[wd]}</option>${addOptionsHtml}</select>
+      <button class="btn btn-g" style="padding:0 16px" onclick="addToRouteDay(${wd})">إضافة</button>
     </div>
-    <div class="sec" style="max-height:50vh;overflow-y:auto;margin-bottom:12px">${rows}</div>
-    <button class="btn btn-gold btn-lg" style="width:100%;margin-bottom:8px" onclick="saveRouteDay(${wd})">📌 حفظ وتثبيت خط سير ${WEEKDAY_NAMES[wd]}</button>
-    ${(ROUTE.templates[wd]||[]).length?`<button class="btn btn-r btn-lg" style="width:100%" onclick="requireAdmin('مسح خط سير',()=>clearRouteDay(${wd}))">🗑️ امسح تثبيت ${WEEKDAY_NAMES[wd]}</button>`:''}`);
+  </div>
+  <div id="route-list">${cardsHtml}</div>`;
 }
 
-function saveRouteDay(wd){
-  const ids=[...document.querySelectorAll('[data-route-store]')].filter(c=>c.checked).map(c=>c.dataset.routeStore);
-  ROUTE.templates[wd]=ids;
-  if(wd===new Date().getDay()) ROUTE.overrides[TODAY]=ids;
+function switchRouteDay(wd){ ROUTE_DAY_VIEW=wd; r_route(); }
+
+function addToRouteDay(wd){
+  const sel=document.getElementById('route-add-sel');
+  const id=sel?.value;
+  if(!id) return;
+  const current = (ROUTE.templates[wd]||[]).slice();
+  if(!current.includes(id)) current.push(id);
+  ROUTE.templates[wd]=current;
   saveRoute();
-  auditLog('خط السير', `${WEEKDAY_NAMES[wd]} — ${ids.length} محل (تثبيت)`);
-  toast(`📌 اتثبّت خط سير ${WEEKDAY_NAMES[wd]} — ${ids.length} محل`);
-  showRoutePage();
-  r_stores();
+  auditLog('خط السير', `إضافة محل ليوم ${WEEKDAY_NAMES[wd]}`);
+  toast('✅ اتضاف لخط السير');
+  r_route();
 }
 
-function clearRouteDay(wd){
-  delete ROUTE.templates[wd];
-  if(wd===new Date().getDay()) delete ROUTE.overrides[TODAY];
+function removeFromRouteDay(storeId, wd){
+  const current = (ROUTE.templates[wd]||[]).filter(id=>id!==storeId);
+  ROUTE.templates[wd]=current;
   saveRoute();
-  toast(`🗑️ اتمسح خط سير ${WEEKDAY_NAMES[wd]}`);
-  showRoutePage();
-  r_stores();
+  auditLog('خط السير', `شيل محل من يوم ${WEEKDAY_NAMES[wd]}`);
+  toast('➖ اتشال من خط السير');
+  r_route();
 }
 
 // ── إضافة دين قديم ────────────────────────────────────────────────
