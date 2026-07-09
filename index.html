@@ -443,6 +443,17 @@ let cart          = LS.g('cart_'+TODAY) || [];
 let orderCart     = [];
 let activeInvOffer= null;
 let sellLock      = false;
+let CUST_TAB      = 'pending'; // 'pending' | 'collected'
+let STORE_SEARCH_Q= '';
+let CUST_SEARCH_Q = '';
+let ROUTE = LS.g('route') || { templates:{}, overrides:{} };
+function saveRoute(){ LS.s('route', ROUTE); }
+const WEEKDAY_NAMES=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+function getTodayRouteIds(){
+  const wd = new Date().getDay();
+  if(ROUTE.overrides[TODAY]) return ROUTE.overrides[TODAY];
+  return ROUTE.templates[wd] || [];
+}
 
 function saveCart(){ LS.s('cart_'+TODAY, cart); }
 try{
@@ -467,6 +478,16 @@ const TG = {
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({chat_id:this.chatId, text, parse_mode:'HTML'})
     }).then(r=>r.ok).catch(()=>false);
+  },
+
+  sendDocument(blob, filename, caption){
+    if(!this.token||!this.chatId) return Promise.resolve(false);
+    const fd=new FormData();
+    fd.append('chat_id', this.chatId);
+    if(caption) fd.append('caption', caption);
+    fd.append('document', blob, filename);
+    return fetch(`https://api.telegram.org/bot${this.token}/sendDocument`,{ method:'POST', body:fd })
+      .then(r=>r.ok).catch(()=>false);
   },
 
   notify(text){
@@ -522,9 +543,15 @@ function tgHeader(icon, title){
   return `${icon} <b>${title}</b>\n👤 ${name} | 🕐 ${now}\n──────────────────`;
 }
 
-function tgSale(invoiceLines, custName, finalT, isDebt, invoiceId){
+function tgSale(invoiceLines, custName, finalT, isDebt, invoiceId, custId){
   let msg=tgHeader('🧾','فاتورة بيع جديدة')+'\n';
   if(custName) msg+=`🏪 العميل: ${custName}\n`;
+  if(custId){
+    const cu=CUSTOMERS.find(c=>c.id===custId);
+    const st=STORES.find(s=>s.id===custId);
+    if(cu?.phone) msg+=`📞 ${cu.phone}\n`;
+    if(st?.address) msg+=`📍 ${st.address}\n`;
+  }
   msg+=`🔢 ${invoiceId}\n`;
   invoiceLines.forEach(l=>{ msg+=`${l.emoji||'📦'} ${l.name} × ${l.qty} — ${fmt(l.total)} ج\n`; });
   msg+=`──────────────────\n💰 الإجمالي: <b>${fmt(finalT)} ج</b>\n`;
@@ -685,6 +712,111 @@ function deletePrevInvoice(date, invoiceId){
   auditLog('حذف فاتورة سابقة', `${invoiceId} — يوم ${date}`);
   toast('🗑️ تم حذف الفاتورة');
   r_ledger();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── صفحة الفواتير السابقة (منفصلة) ──────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+function showPrevInvoicesPage(){
+  const pending = getPendingPrevSales();
+  const rows = pending.length ? pending.map(inv => {
+    const total = inv.lines.reduce((a,s)=>a+s.total,0);
+    const itemsStr = inv.lines.map(s=>(s.emoji||'📦')+' '+s.name+' ×'+s.qty).join(' | ');
+    const debtBadge = inv.debt ? '<span class="bdg br2">آجل</span>' : '<span class="bdg bs">نقدي</span>';
+    return '<div style="padding:10px 0;border-bottom:1px solid var(--bdr)">'
+      +'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+      +'<span style="font-size:13px;font-weight:700;color:var(--orange)">'+inv.invoiceId+'</span>'
+      +'<span style="font-size:12px;color:var(--t3)">'+inv.date+(inv.custName?' — '+inv.custName:'')+'</span>'
+      +'</div>'
+      +'<div style="font-size:13px;color:var(--t2);margin-bottom:6px">'+itemsStr+'</div>'
+      +'<div style="display:flex;justify-content:space-between;align-items:center">'
+      +'<span style="font-weight:700;color:var(--g)">'+fmt(total)+' ج '+debtBadge+'</span>'
+      +'<button onclick="requireAdmin(&apos;حذف فاتورة سابقة&apos;,()=>deletePrevInvoiceRefresh(&apos;'+inv.date+'&apos;,&apos;'+inv.invoiceId+'&apos;))" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:Cairo,sans-serif">حذف 🗑️ 🔐</button>'
+      +'</div></div>';
+  }).join('') : '<div style="text-align:center;color:var(--t3);padding:24px;font-size:14px">مفيش فواتير سابقة معلقة 👍</div>';
+
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:900;color:var(--orange)">📋 فواتير أيام سابقة (${pending.length})</div>
+      <span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    ${pending.length?`<button class="btn btn-lg" style="width:100%;background:var(--red);color:#fff;font-family:Cairo,sans-serif;font-weight:900;border-radius:14px;margin-bottom:14px" onclick="clearAllPrevInvoices()">🗑️ امسح كل الفواتير السابقة 🔐</button>`:''}
+    <div class="sec" style="max-height:60vh;overflow-y:auto">${rows}</div>`);
+}
+function deletePrevInvoiceRefresh(date, invoiceId){
+  const day = DAYS[date];
+  if(day && day.sales){
+    day.sales.forEach(s => { if(s.invoiceId === invoiceId){ s.void=true; s.voidAt=Date.now(); s.voidBy='admin'; s.voidReason='حذف يدوي من الحركات'; } });
+    DAYS[date]=day; LS.s('days',DAYS);
+    auditLog('حذف فاتورة سابقة', `${invoiceId} — يوم ${date}`);
+    toast('🗑️ تم حذف الفاتورة');
+  }
+  showPrevInvoicesPage();
+}
+function clearAllPrevInvoices(){
+  const pending = getPendingPrevSales();
+  if(!pending.length){ toast('مفيش فواتير سابقة معلقة','err'); return; }
+  requireAdmin('مسح كل الفواتير السابقة', ()=>{
+    pending.forEach(inv => {
+      const day = DAYS[inv.date];
+      if(!day || !day.sales) return;
+      day.sales.forEach(s => { if(s.invoiceId === inv.invoiceId){ s.void=true; s.voidAt=Date.now(); s.voidBy='admin'; s.voidReason='مسح جماعي للفواتير السابقة'; } });
+      DAYS[inv.date] = day;
+    });
+    LS.s('days', DAYS);
+    auditLog('مسح كل الفواتير السابقة', `${pending.length} فاتورة`);
+    toast(`🗑️ تم مسح ${pending.length} فاتورة سابقة`);
+    showPrevInvoicesPage();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── صفحة الديون القديمة (منفصلة) ────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+function showOldDebtsPage(){
+  const withDebt = STORES.filter(s=>(s.oldDebt||0)>0).sort((a,b)=>(b.oldDebt||0)-(a.oldDebt||0));
+  const rows = withDebt.length ? withDebt.map(s=>`
+    <div style="padding:10px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center">
+      <div><div style="font-weight:700;font-size:14px">${s.name}</div>${s.phone?`<div style="font-size:11px;color:var(--t3)">${s.phone}</div>`:''}</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-weight:900;color:var(--orange)">${fmt(s.oldDebt)} ج</span>
+        <button onclick="requireAdmin('مسح دين قديم',()=>clearOldDebt('${s.id}'))" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:Cairo,sans-serif">مسح 🔐</button>
+      </div>
+    </div>`).join('') : '<div style="text-align:center;color:var(--t3);padding:20px;font-size:14px">مفيش ديون قديمة مسجلة</div>';
+
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:900;color:var(--orange)">💰 الديون القديمة</div>
+      <span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="sec" style="margin-bottom:14px">
+      <div class="st">➕ إضافة دين قديم لعميل</div>
+      <div class="ig"><div class="il">اسم العميل</div>
+        <select id="old-debt-cust" class="ifield" onchange="onOldDebtCustChange()">
+          <option value="">اختر عميل موجود</option>
+          ${CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
+          <option value="_new">+ عميل جديد</option>
+        </select>
+      </div>
+      <div id="old-debt-new-row" style="display:none;margin-bottom:8px">
+        <input type="text" id="old-debt-new-name" class="ifield" placeholder="اسم العميل الجديد">
+      </div>
+      <div class="ig" style="margin-bottom:10px"><div class="il">المبلغ المطلوب (ج)</div><input type="number" id="ledger-old-debt-amt" class="ifield" placeholder="مثال: 800"></div>
+      <button class="btn btn-o btn-lg" style="width:100%" onclick="addOldDebtFromLedger()">تسجيل الدين القديم 💰</button>
+    </div>
+    <div class="sec" style="max-height:42vh;overflow-y:auto">
+      <div class="st">📋 الديون القديمة المسجلة (${withDebt.length})</div>
+      ${rows}
+    </div>`);
+}
+function clearOldDebt(storeId){
+  const s=STORES.find(x=>x.id===storeId);
+  if(!s) return;
+  auditLog('مسح دين قديم', `${s.name} — ${fmt(s.oldDebt||0)} ج`);
+  s.oldDebt=0;
+  LS.s('stores',STORES);
+  toast('✅ اتمسح الدين القديم');
+  showOldDebtsPage();
 }
 
 function saveDay(){ if(CDAY){ const key=CDAY.date||TODAY; DAYS[key]=CDAY; LS.s('days',DAYS); } }
@@ -1141,7 +1273,7 @@ function r_sell(){
     return;
   }
 
-  const prods  = VAN_STOCK;
+  const prods  = VAN_STOCK.filter(p=>p.qty>0);
   const cartT  = cart.reduce((a,c)=>{const r=cprice(c.prodId,c.qty);return a+r.total;},0);
   const cartN  = cart.length;
 
@@ -1224,7 +1356,7 @@ function clearCart(){ cart=[]; activeInvOffer=null; saveCart(); r_sell(); }
 
 function filterSell(q){
   const list=document.getElementById('sell-list'); if(!list)return;
-  const prods=VAN_STOCK.filter(p=>!q||p.name.includes(q)||(p.name.toLowerCase().includes(q.toLowerCase())));
+  const prods=VAN_STOCK.filter(p=>p.qty>0&&(!q||p.name.includes(q)||(p.name.toLowerCase().includes(q.toLowerCase()))));
   list.innerHTML=prods.map(p=>{
     const ci=cart.find(c=>c.prodId===p.id);
     const off=OFFERS.find(o=>o.active&&o.prodId===p.id);
@@ -1272,10 +1404,10 @@ function openCheckout(){
     invHtml='<div class="sec" style="margin-bottom:12px"><div class="st">🎁 عروض الفاتورة</div>';
     eligible.forEach(o=>{
       const isAct=activeInvOffer===o.id;
-      const disc=o.type==='pct'?Math.round(base*(o.value/100)):0;
+      const disc=o.type==='pct'?Math.round(base*(o.value/100)):o.type==='fixed'?Math.min(o.value,base):0;
       invHtml+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--bdr)">
         <div><div style="font-size:14px;font-weight:700;color:var(--gold)">${o.name}</div>
-        <div style="font-size:12px;color:var(--t2)">${o.type==='pct'?`خصم ${o.value}% = ${fmt(disc)} ج`:`هدية: ${o.giftDesc}`}</div></div>
+        <div style="font-size:12px;color:var(--t2)">${o.type==='pct'?`خصم ${o.value}% = ${fmt(disc)} ج`:o.type==='fixed'?`خصم نقدي ثابت = ${fmt(disc)} ج`:`هدية: ${o.giftDesc}`}</div></div>
         <button class="btn ${isAct?'btn-g':'btn-o'}" style="font-size:13px;padding:8px 12px" onclick="togInvOff('${o.id}')">
           ${isAct?'✓ مفعّل':'تفعيل'}</button>
       </div>`;
@@ -1283,7 +1415,7 @@ function openCheckout(){
     invHtml+='</div>';
   }
   let disc=0;
-  if(activeInvOffer){const ao=INV_OFFERS.find(o=>o.id===activeInvOffer);if(ao&&ao.type==='pct')disc=Math.round(base*(ao.value/100));}
+  if(activeInvOffer){const ao=INV_OFFERS.find(o=>o.id===activeInvOffer);if(ao){ if(ao.type==='pct') disc=Math.round(base*(ao.value/100)); else if(ao.type==='fixed') disc=Math.min(ao.value,base); }}
   const finalT=base-disc;
   const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${c.debt>0?' ('+fmt(c.debt)+' ج)':''}</option>`).join('');
 
@@ -1339,8 +1471,25 @@ function doSell(isDebt){
       toast('⚠️ اكتب اسم العميل الجديد','err');
       return;
     }
-  }
 
+    // ── قفل بيع الآجل لعملاء معينين ───────────────────────────────
+    if(custSel && custSel!=='_new'){
+      const cu=CUSTOMERS.find(x=>x.id===custSel);
+      if(cu && cu.debtLocked){
+        const finalT=(window._checkoutBase||0)-(window._checkoutDisc||0);
+        const limit=cu.creditLimit||0;
+        const newDebtTotal=(cu.debt||0)+finalT;
+        if(!limit || newDebtTotal>limit){
+          requireAdmin(`🔒 آجل مقفول: ${cu.name} — يحتاج تصريح المدير`, ()=>executeSell(true));
+          return;
+        }
+      }
+    }
+  }
+  executeSell(isDebt);
+}
+
+function executeSell(isDebt){
   sellLock=true;
   const btnC=document.getElementById('btn-cash'), btnD=document.getElementById('btn-debt');
   if(btnC)btnC.disabled=true; if(btnD)btnD.disabled=true;
@@ -1388,7 +1537,7 @@ function doSell(isDebt){
     const{unit,total}=cprice(c.prodId,c.qty);
     return {emoji:p?.emoji||'📦',name:p?.name||'',qty:c.qty,total};
   });
-  tgSale(saleLines, custName, finalT, isDebt, invoiceId);
+  tgSale(saleLines, custName, finalT, isDebt, invoiceId, custId);
   activeInvOffer=null; cart=[]; saveCart();
   closeModal();
   toast(`✅ فاتورة ${fmt(finalT)} ج — ${isDebt?'آجل':'نقدي'}`);
@@ -1443,38 +1592,21 @@ function r_ledger(){
 
   document.getElementById('pg-ledger').innerHTML=`
   <div class="g2">
-    <div class="kcard lock" onclick="showNums()"><div class="kc-val">🔐</div><div class="kc-lbl">مبيعات</div></div>
-    <div class="kcard lock" onclick="showNums()"><div class="kc-val">🔐</div><div class="kc-lbl">نقدي</div></div>
-    <div class="kcard lock" onclick="showNums()"><div class="kc-val">🔐</div><div class="kc-lbl">آجل</div></div>
+    <div class="kcard" onclick="showNums()"><div class="kc-val cg">${fmt(stats.totalSales)}</div><div class="kc-lbl">مبيعات</div></div>
+    <div class="kcard" onclick="showNums()"><div class="kc-val cb">${fmt(stats.totalCash)}</div><div class="kc-lbl">نقدي</div></div>
+    <div class="kcard" onclick="showNums()"><div class="kc-val co">${fmt(stats.totalDebt)}</div><div class="kc-lbl">آجل</div></div>
     <div class="kcard"><div class="kc-val ct">${fmt(stats.totalCollect)}</div><div class="kc-lbl">تحصيل</div></div>
     <div class="kcard"><div class="kc-val cx">${fmt(stats.totalExpenses)}</div><div class="kc-lbl">مصروفات</div></div>
     <div class="kcard"><div class="kc-val cr">${fmt(stats.totalReturns)}</div><div class="kc-lbl">مرتجع ج</div></div>
   </div>
-  <div class="lock-ph" onclick="showCashBrief()">🔐 إجمالي الفلوس في الإيد</div>
+  <div class="lock-ph" onclick="showCashBrief()">💵 إجمالي الفلوس في الإيد</div>
   <div class="sec">
     ${(()=>{
       const pending = getPendingPrevSales();
-      if(!pending.length) return '';
-      const rows = pending.map(inv => {
-        const total = inv.lines.reduce((a,s)=>a+s.total,0);
-        const itemsStr = inv.lines.map(s=>(s.emoji||'📦')+' '+s.name+' ×'+s.qty).join(' | ');
-        const debtBadge = inv.debt ? '<span class="bdg br2">آجل</span>' : '<span class="bdg bs">نقدي</span>';
-        return '<div style="padding:10px 0;border-bottom:1px solid var(--bdr)">'
-          +'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
-          +'<span style="font-size:13px;font-weight:700;color:var(--orange)">'+inv.invoiceId+'</span>'
-          +'<span style="font-size:12px;color:var(--t3)">'+inv.date+(inv.custName?' — '+inv.custName:'')+'</span>'
-          +'</div>'
-          +'<div style="font-size:13px;color:var(--t2);margin-bottom:6px">'+itemsStr+'</div>'
-          +'<div style="display:flex;justify-content:space-between;align-items:center">'
-          +'<span style="font-weight:700;color:var(--g)">'+fmt(total)+' ج '+debtBadge+'</span>'
-          +'<button onclick="requireAdmin(&apos;حذف فاتورة سابقة&apos;,()=>deletePrevInvoice(&apos;'+inv.date+'&apos;,&apos;'+inv.invoiceId+'&apos;))" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:Cairo,sans-serif">حذف 🗑️ 🔐</button>'
-          +'</div></div>';
-      }).join('');
-      return '<div class="sec" style="margin-bottom:12px">'
-        +'<div class="st" style="color:var(--orange)">📋 فواتير أيام سابقة — معلقة ('+pending.length+')</div>'
-        +rows+'</div>';
+      return '<button class="btn btn-lg" style="width:100%;background:var(--orange);color:#fff;font-family:Cairo,sans-serif;font-weight:900;border-radius:14px" onclick="showPrevInvoicesPage()">📋 فواتير أيام سابقة معلقة'
+        + (pending.length? ' ('+pending.length+')' : '') + ' ←</button>';
     })()}
-    <div class="st">📋 حركات اليوم (${allMoves.length}) <span class="st-a" onclick="showVoidList()">إلغاء فاتورة 🔐</span></div>
+    <div class="st" style="margin-top:12px">📋 حركات اليوم (${allMoves.length}) <span class="st-a" onclick="showVoidList()">إلغاء فاتورة 🔐</span></div>
     ${liHtml}
   </div>
   <div class="sec">
@@ -1513,20 +1645,7 @@ function r_ledger(){
     <button class="btn btn-teal btn-lg" onclick="doCollect()">✓ تسجيل تحصيل</button>
   </div>
   <div class="sec">
-    <div class="st">💰 إضافة دين قديم لعميل</div>
-    <div class="al al-o" style="margin-bottom:10px">لعملاء عندهم ديون من قبل التطبيق</div>
-    <div class="ig"><div class="il">اسم العميل</div>
-      <select id="old-debt-cust" class="ifield" onchange="onOldDebtCustChange()">
-        <option value="">اختر عميل موجود</option>
-        ${CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
-        <option value="_new">+ عميل جديد</option>
-      </select>
-    </div>
-    <div id="old-debt-new-row" style="display:none;margin-bottom:8px">
-      <input type="text" id="old-debt-new-name" class="ifield" placeholder="اسم العميل الجديد">
-    </div>
-    <div class="ig" style="margin-bottom:10px"><div class="il">المبلغ المطلوب (ج)</div><input type="number" id="ledger-old-debt-amt" class="ifield" placeholder="مثال: 800"></div>
-    <button class="btn btn-o btn-lg" onclick="addOldDebtFromLedger()">تسجيل الدين القديم 💰</button>
+    <button class="btn btn-o btn-lg" style="width:100%" onclick="showOldDebtsPage()">💰 الديون القديمة ←</button>
   </div>
   <div class="sec">
     <div class="st">💵 العهدة</div>
@@ -1582,32 +1701,28 @@ function cancelWarehouseReturn(retId){
   });
 }
 function showNums(){
-  requireAdmin('عرض أرقام المبيعات',()=>{
-    const s=calcDayStats();
-    openModal(`
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <div style="font-size:16px;font-weight:900;color:var(--admin)">🔐 أرقام اليوم</div>
-        <span class="m-close" onclick="closeModal()">✕</span>
-      </div>
-      <div class="g3">
-        <div class="kcard"><div class="kc-val cg">${fmt(s.totalSales)}</div><div class="kc-lbl">مبيعات ج</div></div>
-        <div class="kcard"><div class="kc-val cb">${fmt(s.totalCash)}</div><div class="kc-lbl">نقدي ج</div></div>
-        <div class="kcard"><div class="kc-val co">${fmt(s.totalDebt)}</div><div class="kc-lbl">آجل ج</div></div>
-      </div>
-      <button class="btn btn-b btn-lg" style="margin-top:10px" onclick="closeModal()">إغلاق</button>`);
-  });
+  const s=calcDayStats();
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div style="font-size:16px;font-weight:900;color:var(--admin)">📊 أرقام اليوم</div>
+      <span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="g3">
+      <div class="kcard"><div class="kc-val cg">${fmt(s.totalSales)}</div><div class="kc-lbl">مبيعات ج</div></div>
+      <div class="kcard"><div class="kc-val cb">${fmt(s.totalCash)}</div><div class="kc-lbl">نقدي ج</div></div>
+      <div class="kcard"><div class="kc-val co">${fmt(s.totalDebt)}</div><div class="kc-lbl">آجل ج</div></div>
+    </div>
+    <button class="btn btn-b btn-lg" style="margin-top:10px" onclick="closeModal()">إغلاق</button>`);
 }
 function showCashBrief(){
-  requireAdmin('إجمالي الفلوس في الإيد',()=>{
-    const s=calcDayStats();
-    openModal(`
-      <div style="text-align:center;padding:10px 0 20px">
-        <div style="font-size:14px;color:var(--admin);font-weight:700;margin-bottom:16px">🔐 للمدير فقط</div>
-        <div style="font-size:52px;font-weight:900;color:var(--g)">${fmt(s.expected)} ج</div>
-        <div style="font-size:13px;color:var(--t2);margin-top:8px">عهدة: ${fmt(CDAY.startCash)} + نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
-        <button class="btn btn-b" style="width:100%;margin-top:20px" onclick="closeModal()">إغلاق</button>
-      </div>`);
-  });
+  const s=calcDayStats();
+  openModal(`
+    <div style="text-align:center;padding:10px 0 20px">
+      <div style="font-size:14px;color:var(--admin);font-weight:700;margin-bottom:16px">💵 إجمالي الفلوس في الإيد</div>
+      <div style="font-size:52px;font-weight:900;color:var(--g)">${fmt(s.expected)} ج</div>
+      <div style="font-size:13px;color:var(--t2);margin-top:8px">عهدة: ${fmt(CDAY.startCash)} + نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
+      <button class="btn btn-b" style="width:100%;margin-top:20px" onclick="closeModal()">إغلاق</button>
+    </div>`);
 }
 
 function showVoidList(){
@@ -1843,7 +1958,7 @@ function addOldDebtFromLedger(){
   LS.s('customers',CUSTOMERS);
   auditLog('تسجيل دين قديم',`${custName} — ${fmt(amt)} ج`);
   toast(`✅ تم تسجيل دين ${custName}: ${fmt(amt)} ج`);
-  r_ledger();
+  showOldDebtsPage();
 }
 
 
@@ -1953,26 +2068,65 @@ function printInvoice(invoiceId){
 // CUSTOMERS PAGE
 // ══════════════════════════════════════════════════════════════════
 function r_customers(){
-  const sorted=[...CUSTOMERS].sort((a,b)=>{
-    const da=(b.debt||0)+(STORES.find(s=>s.id===b.id)?.oldDebt||0);
-    const db=(a.debt||0)+(STORES.find(s=>s.id===a.id)?.oldDebt||0);
-    return da-db;
-  });
-
   const totalDebt=CUSTOMERS.reduce((a,c)=>{
     const store=STORES.find(s=>s.id===c.id);
     return a+(c.debt||0)+(store?.oldDebt||0);
   },0);
+  const collectedTodayIds = new Set((CDAY?.collections||[]).map(c=>c.custId));
+  const withBalance = CUSTOMERS.filter(c=>{
+    const store=STORES.find(s=>s.id===c.id);
+    return (c.debt||0)+(store?.oldDebt||0) > 0;
+  });
+  const pendingCount   = withBalance.filter(c=>!collectedTodayIds.has(c.id)).length;
+  const collectedCount = withBalance.filter(c=>collectedTodayIds.has(c.id)).length;
 
-  const custHtml=sorted.map((cust,i)=>{
+  document.getElementById('pg-customers').innerHTML=`
+  <div class="g2" style="margin-bottom:12px">
+    <div class="kcard"><div class="kc-val cb">${CUSTOMERS.length}</div><div class="kc-lbl">إجمالي العملاء</div></div>
+    <div class="kcard"><div class="kc-val cr">${fmt(totalDebt)}</div><div class="kc-lbl">إجمالي المديونية ج</div></div>
+  </div>
+  <input class="sbox" placeholder="🔍 ابحث عن عميل..." oninput="filterCustomers(this.value)" id="cust-search" value="${CUST_SEARCH_Q||''}">
+  <div style="display:flex;gap:8px;margin:10px 0">
+    <button class="btn ${CUST_TAB==='pending'?'btn-o':'btn-b'}" style="flex:1;font-size:13px;padding:9px 4px" onclick="switchCustTab('pending')">🔴 عليهم ديون (${pendingCount})</button>
+    <button class="btn ${CUST_TAB==='collected'?'btn-g':'btn-b'}" style="flex:1;font-size:13px;padding:9px 4px" onclick="switchCustTab('collected')">✅ اتحصّل منهم النهاردة (${collectedCount})</button>
+  </div>
+  <div id="cust-list"></div>`;
+  renderCustList();
+}
+
+function switchCustTab(tab){ CUST_TAB=tab; r_customers(); }
+
+function custListSource(){
+  const collectedTodayIds = new Set((CDAY?.collections||[]).map(c=>c.custId));
+  const withBalance = CUSTOMERS.filter(c=>{
+    const store=STORES.find(s=>s.id===c.id);
+    return (c.debt||0)+(store?.oldDebt||0) > 0;
+  });
+  if(CUST_TAB==='collected') return withBalance.filter(c=>collectedTodayIds.has(c.id));
+  const pending = withBalance.filter(c=>!collectedTodayIds.has(c.id));
+  const zero = CUSTOMERS.filter(c=>!withBalance.includes(c));
+  return [...pending, ...zero];
+}
+
+function renderCustList(){
+  let list = custListSource();
+  if(CUST_SEARCH_Q) list = list.filter(c=>c.name.includes(CUST_SEARCH_Q)||c.phone?.includes(CUST_SEARCH_Q));
+  list = [...list].sort((a,b)=>{
+    const da=(b.debt||0)+(STORES.find(s=>s.id===b.id)?.oldDebt||0);
+    const db=(a.debt||0)+(STORES.find(s=>s.id===a.id)?.oldDebt||0);
+    return da-db;
+  });
+  const el=document.getElementById('cust-list'); if(!el) return;
+  el.innerHTML = list.map(cust=>{
     const store=STORES.find(s=>s.id===cust.id);
     const totalCustDebt=(cust.debt||0)+(store?.oldDebt||0);
     const allSales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===cust.id&&!s.void&&s.total>0);
     const totalBought=allSales.reduce((a,s)=>a+s.total,0);
+    const lockBadge = cust.debtLocked ? '<span class="bdg br2" style="margin-right:6px">🔒 آجل مقفول</span>' : '';
     return `<div class="scard" style="cursor:pointer" onclick="showCustStatement('${cust.id}')">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div style="flex:1">
-          <div style="font-size:15px;font-weight:900">${cust.name}</div>
+          <div style="font-size:15px;font-weight:900">${cust.name} ${lockBadge}</div>
           ${cust.phone?`<div style="font-size:12px;color:var(--blue);margin-top:2px">📞 ${cust.phone}</div>`:''}
           ${store?.address?`<div style="font-size:12px;color:var(--t3)">📍 ${store.address}</div>`:''}
           <div style="font-size:12px;color:var(--t2);margin-top:3px">إجمالي المشتريات: ${fmt(totalBought)} ج</div>
@@ -1983,32 +2137,12 @@ function r_customers(){
         </div>
       </div>
     </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:20px">لا توجد عملاء</div>';
-
-  document.getElementById('pg-customers').innerHTML=`
-  <div class="g2" style="margin-bottom:12px">
-    <div class="kcard"><div class="kc-val cb">${CUSTOMERS.length}</div><div class="kc-lbl">إجمالي العملاء</div></div>
-    <div class="kcard"><div class="kc-val cr">${fmt(totalDebt)}</div><div class="kc-lbl">إجمالي المديونية ج</div></div>
-  </div>
-  <input class="sbox" placeholder="🔍 ابحث عن عميل..." oninput="filterCustomers(this.value)" id="cust-search">
-  <div id="cust-list">${custHtml}</div>`;
+  }).join('')||`<div style="color:var(--t3);text-align:center;padding:20px">${CUST_TAB==='collected'?'مفيش حد اتحصل منه النهاردة لسه':'لا توجد عملاء'}</div>`;
 }
 
 function filterCustomers(q){
-  const list=document.getElementById('cust-list'); if(!list) return;
-  const filtered=q?CUSTOMERS.filter(c=>c.name.includes(q)||c.phone?.includes(q)):CUSTOMERS;
-  list.innerHTML=filtered.map(cust=>{
-    const store=STORES.find(s=>s.id===cust.id);
-    const totalDebt=(cust.debt||0)+(store?.oldDebt||0);
-    return `<div class="scard" onclick="showCustStatement('${cust.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div><div style="font-size:15px;font-weight:900">${cust.name}</div>
-        ${cust.phone?`<div style="font-size:12px;color:var(--blue)">📞 ${cust.phone}</div>`:''}
-        </div>
-        <div style="font-size:18px;font-weight:900;color:${totalDebt>0?'var(--red)':'var(--g)'}">${fmt(totalDebt)} ج</div>
-      </div>
-    </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:14px">لا نتائج</div>';
+  CUST_SEARCH_Q = q;
+  renderCustList();
 }
 
 function showCustStatement(custId){
@@ -2074,7 +2208,28 @@ function editCustomer(custId){
     <div class="ig"><div class="il">الهاتف</div><input type="tel" id="ec-phone" class="ifield" value="${cust.phone||''}"></div>
     <div class="ig"><div class="il">العنوان</div><input type="text" id="ec-addr" class="ifield" value="${store.address||''}"></div>
     <div class="ig"><div class="il">الرصيد الافتتاحي (ج)</div><input type="number" id="ec-olddebt" class="ifield" value="${store.oldDebt||0}" placeholder="0"></div>
-    <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="saveCustomerEdit('${custId}')">✅ حفظ التعديلات</button>`);
+    <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="saveCustomerEdit('${custId}')">✅ حفظ التعديلات</button>
+    <div class="sec" style="margin-top:14px">
+      <div class="st">🔒 إعدادات الآجل (المدير فقط)</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px">
+        <input type="checkbox" id="ec-debtlock" ${cust.debtLocked?'checked':''} style="width:18px;height:18px">
+        قفل بيع الآجل لهذا العميل — مايتباعش ليه آجل غير بباسورد المدير
+      </label>
+      <div class="ig" style="margin-bottom:10px"><div class="il">حد ائتمان مسموح بيه بدون باسورد (ج) — سيبه 0 لو عايز قفل تام</div>
+        <input type="number" id="ec-creditlimit" class="ifield" value="${cust.creditLimit||0}" placeholder="0"></div>
+      <button class="btn btn-adm btn-lg" style="width:100%" onclick="requireAdmin('تعديل إعدادات الآجل',()=>saveDebtLock('${custId}'))">حفظ إعدادات الآجل 🔐</button>
+    </div>`);
+}
+function saveDebtLock(custId){
+  const cust=CUSTOMERS.find(c=>c.id===custId);
+  if(!cust) return;
+  cust.debtLocked = !!document.getElementById('ec-debtlock')?.checked;
+  cust.creditLimit = parseFloat(document.getElementById('ec-creditlimit')?.value)||0;
+  LS.s('customers',CUSTOMERS);
+  auditLog('إعدادات الآجل', `${cust.name} — قفل:${cust.debtLocked?'نعم':'لا'} حد:${fmt(cust.creditLimit)}`);
+  toast('✅ اتحفظت إعدادات الآجل');
+  closeModal();
+  r_customers();
 }
 
 function saveCustomerEdit(custId){
@@ -2431,21 +2586,23 @@ function r_stores(){
 
   const stHtml=STORES.map((s,i)=>{
     const tv=s.visits?.find(v=>v.date===today);
+    const activeStatuses = tv?.statuses?.length ? tv.statuses : (tv?.status ? [tv.status] : []);
     const st=tv?.status||'pending';
     const cust=CUSTOMERS.find(c=>c.id===s.id);
     const debt=(cust?.debt||0)+(s.oldDebt||0);
-    return `<div class="scard">
+    const inRoute = getTodayRouteIds().includes(s.id);
+    return `<div class="scard" ${inRoute?'style="border-color:var(--blue)"':''}>
       <div class="scard-top">
         <div style="flex:1">
-          <div class="scard-name">${s.name}</div>
+          <div class="scard-name">${inRoute?'🗺️ ':''}${s.name}</div>
           ${s.phone?`<div class="scard-meta">📞 <a href="tel:${s.phone}" style="color:var(--blue);text-decoration:none">${s.phone}</a></div>`:''}
           ${s.address?`<div class="scard-meta">📍 ${s.address}</div>`:''}
           <div class="scard-meta">${tv?'زيارة اليوم ✓':'لم يُزر اليوم'}${debt>0?` — 🔴 عليه ${fmt(debt)} ج`:''}</div>
         </div>
-        <span class="sstatus ss-${st}">${statusLbl(st)}</span>
+        <span class="sstatus ss-${st}">${activeStatuses.length?activeStatuses.map(statusLbl).join(' + '):'معلق'}</span>
       </div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
-        ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${st===x?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
+        ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
       </div>
       ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
       <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
@@ -2459,6 +2616,7 @@ function r_stores(){
 
   document.getElementById('pg-stores').innerHTML=`
   ${remHtml}${routeBar}
+  <button class="btn btn-blue btn-lg" style="width:100%;margin-bottom:12px" onclick="showRoutePage()">🗺️ خط السير (${getTodayRouteIds().length} محل النهاردة)</button>
   <div class="sec">
     <div class="st">➕ إضافة محل / عميل</div>
     <div class="ig"><div class="il">اسم المحل *</div><input type="text" id="new-store" class="ifield" placeholder="اسم المحل أو العميل"></div>
@@ -2469,7 +2627,45 @@ function r_stores(){
       <button class="btn btn-blue btn-lg" onclick="addStore(true)">📍 مع GPS</button>
     </div>
   </div>
-  <div class="sec"><div class="st">🏪 كل المحلات (${STORES.length})</div>${stHtml}</div>`;
+  <input class="sbox" placeholder="🔍 ابحث عن محل..." oninput="filterStores(this.value)" id="store-search" value="${STORE_SEARCH_Q||''}">
+  <div class="sec"><div class="st">🏪 كل المحلات (<span id="store-count">${STORES.length}</span>)</div><div id="store-list">${stHtml}</div></div>`;
+  if(STORE_SEARCH_Q) filterStores(STORE_SEARCH_Q);
+}
+
+function filterStores(q){
+  STORE_SEARCH_Q=q;
+  const list=document.getElementById('store-list'); if(!list) return;
+  const idxMap = STORES.map((s,i)=>({s,i}));
+  const filtered = q ? idxMap.filter(({s})=>s.name.includes(q)||s.phone?.includes(q)||s.address?.includes(q)) : idxMap;
+  const cnt=document.getElementById('store-count'); if(cnt) cnt.textContent=filtered.length;
+  list.innerHTML = filtered.map(({s,i})=>{
+    const tv=s.visits?.find(v=>v.date===TODAY);
+    const activeStatuses = tv?.statuses?.length ? tv.statuses : (tv?.status ? [tv.status] : []);
+    const st=tv?.status||'pending';
+    const cust=CUSTOMERS.find(c=>c.id===s.id);
+    const debt=(cust?.debt||0)+(s.oldDebt||0);
+    return `<div class="scard">
+      <div class="scard-top">
+        <div style="flex:1">
+          <div class="scard-name">${s.name}</div>
+          ${s.phone?`<div class="scard-meta">📞 <a href="tel:${s.phone}" style="color:var(--blue);text-decoration:none">${s.phone}</a></div>`:''}
+          ${s.address?`<div class="scard-meta">📍 ${s.address}</div>`:''}
+          <div class="scard-meta">${tv?'زيارة اليوم ✓':'لم يُزر اليوم'}${debt>0?` — 🔴 عليه ${fmt(debt)} ج`:''}</div>
+        </div>
+        <span class="sstatus ss-${st}">${activeStatuses.length?activeStatuses.map(statusLbl).join(' + '):'معلق'}</span>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
+        ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
+      </div>
+      ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
+      <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustHistory('${s.id}')">كشف حساب</button>
+        <button class="btn btn-o" style="flex:1;font-size:12px" onclick="showAddOldDebt('${s.id}','${s.name}')">دين قديم</button>
+        <button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>
+      </div>
+    </div>`;
+  }).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
 }
 
 const statusLbl=st=>({sold:'باع',collect:'حصّل',reject:'رفض',closed:'مغلق',pending:'معلق'}[st]||'معلق');
@@ -2477,15 +2673,26 @@ const statusLbl=st=>({sold:'باع',collect:'حصّل',reject:'رفض',closed:'�
 function visitStore(i,status){
   if(!CDAY){toast('ابدأ يوماً أولاً','warn');return;}
   if(!STORES[i].visits) STORES[i].visits=[];
-  const ei=STORES[i].visits.findIndex(v=>v.date===TODAY);
-  const vEntry={date:TODAY,status,ts:Date.now()};
-  if(ei>=0) STORES[i].visits[ei]=vEntry; else STORES[i].visits.push(vEntry);
-  // Also log visit in CDAY
-  const vi=CDAY.visits.findIndex(v=>v.storeId===STORES[i].id);
-  const cv={id:uid(),storeId:STORES[i].id,storeName:STORES[i].name,status,ts:Date.now()};
-  if(vi>=0) CDAY.visits[vi]=cv; else CDAY.visits.push(cv);
+  let entry = STORES[i].visits.find(v=>v.date===TODAY);
+  if(!entry){ entry={date:TODAY, statuses:[], ts:Date.now()}; STORES[i].visits.push(entry); }
+  if(!entry.statuses) entry.statuses = entry.status ? [entry.status] : [];
+  if(status==='pending'){
+    entry.statuses=[];
+  } else {
+    const idx=entry.statuses.indexOf(status);
+    if(idx>=0) entry.statuses.splice(idx,1); else entry.statuses.push(status);
+  }
+  entry.status = entry.statuses.includes('sold') ? 'sold' : (entry.statuses[entry.statuses.length-1] || 'pending');
+  entry.ts=Date.now();
+
+  let cv = CDAY.visits.find(v=>v.storeId===STORES[i].id);
+  if(!cv){ cv={id:uid(),storeId:STORES[i].id,storeName:STORES[i].name,statuses:[],ts:Date.now()}; CDAY.visits.push(cv); }
+  cv.statuses = entry.statuses.slice();
+  cv.status = entry.status;
+  cv.ts=Date.now();
+
   LS.s('stores',STORES); saveDay();
-  tgVisit(STORES[i].name, status);
+  tgVisit(STORES[i].name, entry.statuses.join(' + ')||'pending');
   r_stores();
 }
 function addStore(withGPS){
@@ -2517,6 +2724,54 @@ function clearStoreForm(){
 }
 function delStore(i){ STORES.splice(i,1); LS.s('stores',STORES); r_stores(); }
 function openMaps(lat,lng){ window.open(`https://www.google.com/maps?q=${lat},${lng}`,'_blank'); }
+
+// ══════════════════════════════════════════════════════════════════
+// ── صفحة خط السير ────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+function showRoutePage(){
+  const wd = new Date().getDay();
+  const todayIds = new Set(getTodayRouteIds());
+  const hasTemplate = !!(ROUTE.templates[wd] && ROUTE.templates[wd].length);
+  const rows = STORES.map(s=>{
+    const checked = todayIds.has(s.id);
+    return `<label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr)">
+      <input type="checkbox" data-route-store="${s.id}" ${checked?'checked':''} style="width:18px;height:18px;flex-shrink:0">
+      <span style="flex:1;font-size:14px;font-weight:700">${s.name}</span>
+      ${s.address?`<span style="font-size:11px;color:var(--t3)">${s.address}</span>`:''}
+    </label>`;
+  }).join('') || '<div style="text-align:center;color:var(--t3);padding:20px">لا توجد محلات — ضيف محلات الأول</div>';
+
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div style="font-size:17px;font-weight:900;color:var(--blue)">🗺️ خط السير — ${WEEKDAY_NAMES[wd]}</div>
+      <span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="al al-b" style="margin-bottom:10px">اختار المحلات/العملاء المفروض تعدي عليهم النهاردة.${hasTemplate?` (فيه خط سير مثبّت أصلاً ليوم ${WEEKDAY_NAMES[wd]})`:''}</div>
+    <div class="sec" style="max-height:50vh;overflow-y:auto;margin-bottom:12px">${rows}</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-g btn-lg" style="flex:1" onclick="saveTodayRoute(false)">✅ حفظ لليوم بس</button>
+      <button class="btn btn-gold btn-lg" style="flex:1" onclick="saveTodayRoute(true)">📌 ثبّت كل ${WEEKDAY_NAMES[wd]}</button>
+    </div>
+    ${hasTemplate?`<button class="btn btn-r btn-lg" style="width:100%;margin-top:8px" onclick="requireAdmin('مسح خط سير ثابت',clearRouteTemplate)">🗑️ امسح التثبيت الخاص بـ ${WEEKDAY_NAMES[wd]}</button>`:''}`);
+}
+function saveTodayRoute(pin){
+  const ids=[...document.querySelectorAll('[data-route-store]')].filter(c=>c.checked).map(c=>c.dataset.routeStore);
+  const wd = new Date().getDay();
+  ROUTE.overrides[TODAY]=ids;
+  if(pin) ROUTE.templates[wd]=ids;
+  saveRoute();
+  auditLog('خط السير', `${WEEKDAY_NAMES[wd]} — ${ids.length} محل${pin?' (تثبيت)':''}`);
+  toast(pin?`📌 اتثبّت خط سير ${WEEKDAY_NAMES[wd]}`:'✅ اتحفظ لليوم بس');
+  closeModal();
+  r_stores();
+}
+function clearRouteTemplate(){
+  const wd = new Date().getDay();
+  delete ROUTE.templates[wd];
+  saveRoute();
+  toast(`🗑️ اتمسح التثبيت الخاص بـ ${WEEKDAY_NAMES[wd]}`);
+  showRoutePage();
+}
 
 // ── إضافة دين قديم ────────────────────────────────────────────────
 function showAddOldDebt(storeId, storeName){
@@ -2602,7 +2857,7 @@ function r_offers(){
     <div style="background:linear-gradient(135deg,rgba(255,208,0,.07),rgba(0,255,136,.04));border:1px solid rgba(255,208,0,.25);border-radius:12px;padding:13px;margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div><div style="font-size:14px;font-weight:900;color:var(--gold)">🧾 ${o.name}</div>
-        <div style="font-size:12px;color:var(--t2);margin-top:3px">عند ≥ ${fmt(o.minTotal)} ج — ${o.type==='pct'?`خصم ${o.value}%`:`هدية: ${o.giftDesc}`}</div></div>
+        <div style="font-size:12px;color:var(--t2);margin-top:3px">عند ≥ ${fmt(o.minTotal)} ج — ${o.type==='pct'?`خصم ${o.value}%`:o.type==='fixed'?`خصم نقدي ثابت ${fmt(o.value)} ج`:`هدية: ${o.giftDesc}`}</div></div>
         <button class="btn btn-r" style="font-size:11px;padding:6px 10px" onclick="requireAdmin('حذف عرض فاتورة',()=>delInvOffer(${i}))">حذف</button>
       </div>
       <div class="toggle-wrap">
@@ -2657,20 +2912,28 @@ function showAddInvOffer(){
     </div>
     <div class="ig"><div class="il">اسم العرض</div><input type="text" id="io-name" class="ifield" placeholder="خصم الكمية الكبيرة"></div>
     <div class="ig"><div class="il">الحد الأدنى (ج)</div><input type="number" id="io-min" class="ifield" placeholder="2000"></div>
-    <div class="ig"><div class="il">النوع</div><select id="io-type" class="ifield" onchange="togIOT()"><option value="pct">💲 خصم %</option><option value="gift">🎁 هدية</option></select></div>
+    <div class="ig"><div class="il">النوع</div><select id="io-type" class="ifield" onchange="togIOT()"><option value="pct">💲 خصم %</option><option value="fixed">💰 خصم نقدي ثابت</option><option value="gift">🎁 هدية</option></select></div>
     <div id="io-pr" class="ig"><div class="il">نسبة الخصم %</div><input type="number" id="io-pct" class="ifield" placeholder="5"></div>
+    <div id="io-fx" class="ig" style="display:none"><div class="il">قيمة الخصم الثابت (ج)</div><input type="number" id="io-fixedamt" class="ifield" placeholder="مثال: 50"></div>
     <div id="io-gr" class="ig" style="display:none"><div class="il">وصف الهدية</div><input type="text" id="io-gd" class="ifield" placeholder="كارتون مياه"></div>
     <button class="btn btn-gold btn-lg" onclick="addInvOffer()">إضافة</button>`);
 }
-function togIOT(){ const t=document.getElementById('io-type')?.value; document.getElementById('io-pr').style.display=t==='pct'?'':'none'; document.getElementById('io-gr').style.display=t==='gift'?'':'none'; }
+function togIOT(){
+  const t=document.getElementById('io-type')?.value;
+  document.getElementById('io-pr').style.display=t==='pct'?'':'none';
+  document.getElementById('io-fx').style.display=t==='fixed'?'':'none';
+  document.getElementById('io-gr').style.display=t==='gift'?'':'none';
+}
 function addInvOffer(){
   const name=document.getElementById('io-name')?.value.trim();
   const min=parseFloat(document.getElementById('io-min')?.value)||0;
   const type=document.getElementById('io-type')?.value;
   const pct=parseFloat(document.getElementById('io-pct')?.value)||0;
+  const fixedAmt=parseFloat(document.getElementById('io-fixedamt')?.value)||0;
   const gd=document.getElementById('io-gd')?.value.trim();
   if(!name||min<=0){toast('أكمل البيانات','err');return;}
-  INV_OFFERS.push({id:uid(),name,minTotal:min,type,value:pct,giftDesc:gd||'',active:true});
+  const value = type==='fixed' ? fixedAmt : pct;
+  INV_OFFERS.push({id:uid(),name,minTotal:min,type,value,giftDesc:gd||'',active:true});
   LS.s('invOffers',INV_OFFERS); toast('✅ تم إضافة عرض الفاتورة'); closeModal(); r_offers();
 }
 
@@ -3186,13 +3449,17 @@ function doExport(){
   try{
     const data={_v:5,exportDate:new Date().toISOString(),CFG,DAYS,CUSTOMERS,STORES,OFFERS,INV_OFFERS,WAREHOUSE,VAN_STOCK,ORDERS,AUDIT,GOAL};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const filename='sultan_backup_'+TODAY+'.json';
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url; a.download='sultan_backup_'+TODAY+'.json';
+    a.href=url; a.download=filename;
     document.body.appendChild(a); a.click();
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },1000);
     auditLog('Export','تصدير نسخة احتياطية شاملة تشمل مخزون السيارة');
     toast('✅ تم تصدير النسخة الاحتياطية — تشمل مخزون السيارة');
+    // إرسال نسخة كملف على تليجرام كمان
+    TG.sendDocument(blob, filename, `📦 نسخة احتياطية — ${CFG?.name||'المندوب'} — ${TODAY}`)
+      .then(ok=>{ if(ok) toast('📡 اتبعتت نسخة كمان على تليجرام'); });
   }catch(ex){ toast('فشل التصدير: '+ex.message,'err'); }
 }
 

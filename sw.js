@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v8 (Fixed)
-const CACHE = 'mandob-sultan-v8';
+// مندوب سلطان — Service Worker v9 (تحديثات: فواتير سابقة، ديون قديمة، قفل آجل، خط سير، عروض نقدية)
+const CACHE = 'mandob-sultan-v9';
 const ASSETS = [
   './',
   './index.html',
