@@ -950,7 +950,8 @@ async function checkRepSession(){
     await sb.auth.signOut();
     return false;
   }
-  REP = { id: profile.id, name: profile.name || profile.email };
+  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code)').eq('id', profile.id).maybeSingle();
+  REP = { id: profile.id, name: profile.name || profile.email, treasuryId: repRow?.treasury_id||null, priceLevelCode: repRow?.price_levels?.code||null };
   LS.s('rep', REP);
   return true;
 }
@@ -1013,14 +1014,26 @@ async function syncVanStockFromSultan(){
   if(SYNC_QUEUE.some(e=>e.kind==='sale' && e.status==='pending')) return {added:0,updated:0,error:null,skipped:true};
   try{
     const { data, error } = await sb.from('van_stock')
-      .select('product_id, qty, products(name, wholesale_price, unit)')
+      .select('product_id, qty, products(name, retail_price, wholesale_price, unit)')
       .eq('rep_id', REP.id);
     if(error) return {added:0,updated:0,error:error.message};
+
+    // سعر البيع حسب مستوى السعر اللي حدّده الأدمن للمندوب ده (sales_reps.price_level_id)،
+    // ولو مفيش سعر مسجّل للصنف فى المستوى ده، نرجع لسعر القطاعي ثم الجملة (نفس ترتيب sales.js)
+    let levelPriceMap = {};
+    if(REP.priceLevelCode && data?.length){
+      const { data: lvl } = await sb.from('price_levels').select('id').eq('code', REP.priceLevelCode).maybeSingle();
+      if(lvl){
+        const ids = data.map(r=>r.product_id);
+        const { data: prices } = await sb.from('product_prices').select('product_id,price').eq('price_level_id', lvl.id).in('product_id', ids);
+        (prices||[]).forEach(pr=>{ levelPriceMap[pr.product_id]=Number(pr.price)||0; });
+      }
+    }
 
     let added=0, updated=0;
     (data||[]).forEach(row=>{
       const qty = Number(row.qty)||0;
-      const price = Number(row.products?.wholesale_price)||0;
+      const price = levelPriceMap[row.product_id] || Number(row.products?.retail_price) || Number(row.products?.wholesale_price) || 0;
       let p = VAN_STOCK.find(x=>x.id===row.product_id);
       if(!p){
         VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, qty, origQty:qty, unit:row.products?.unit||'', _sultanSynced:true});
@@ -1106,6 +1119,14 @@ async function resolveRealCustomerId(localId, name, phone){
 // سلطان كمان بدل ما تفضل فاتورة حقيقية شغالة وهو شايفها ملغاة محلياً.
 let _invoiceIdMap = LS.g('invoiceIdMap') || {};
 
+// خزنة المندوب الخاصة بيه (بتتعمل تلقائي لكل مندوب) — لو لأي سبب مش
+// موجودة (حالة نادرة/قديمة)، نرجع للخزنة الرئيسية بدل ما نوقف العملية
+async function getRepTreasuryId(){
+  if(REP.treasuryId) return REP.treasuryId;
+  const { data } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+  return data?.id || null;
+}
+
 const SYNC_HANDLERS = {
   sale: async (payload) => {
     const items = payload.items.filter(it => isRealSultanId(it.productId));
@@ -1118,7 +1139,7 @@ const SYNC_HANDLERS = {
     if(payload.isDebt && !realCustId) throw new Error('فاتورة آجل بدون عميل حقيقي — تعذّرت المزامنة');
 
     const { data: mainWh } = await sb.from('warehouses').select('id').eq('is_main', true).limit(1).maybeSingle();
-    const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+    const repTreasId = await getRepTreasuryId();
 
     const { data, error } = await sb.rpc('fn_create_sale', {
       p_customer_id: realCustId,
@@ -1129,7 +1150,7 @@ const SYNC_HANDLERS = {
       p_discount: payload.discount || 0,
       p_warehouse_id: mainWh?.id || null,
       p_rep_id: REP.id,
-      p_treasury_id: payload.isDebt ? null : (defTreas?.id || null), // آجل مالوش أثر على الخزنة، زي sales.js بالظبط
+      p_treasury_id: payload.isDebt ? null : repTreasId, // آجل مالوش أثر على الخزنة، زي sales.js بالظبط — نقدي بيدخل خزنة المندوب نفسه
       p_source_app: 'rep_van',
       p_created_by: REP.id,
       p_items: items.map(it => ({
@@ -1155,10 +1176,10 @@ const SYNC_HANDLERS = {
   collection: async (payload) => {
     const realCustId = await resolveRealCustomerId(payload.custId, payload.custName, null);
     if(!realCustId) throw new Error('تحصيل بدون عميل حقيقي — تعذّرت المزامنة');
-    const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+    const repTreasId = await getRepTreasuryId();
     const { error } = await sb.from('customer_payments').insert({
       ref: 'REP-COL-'+payload.ts, customer_id: realCustId, amount: payload.amt,
-      status: 'confirmed', treasury_id: defTreas?.id || null, created_by: REP.id,
+      status: 'confirmed', treasury_id: repTreasId, created_by: REP.id,
     });
     if(error) throw error;
   },
@@ -1166,12 +1187,12 @@ const SYNC_HANDLERS = {
   expense: async (payload) => {
     const catId = await resolveExpenseCategoryId(payload.cat);
     if(!catId) throw new Error('تصنيف المصروف "'+payload.cat+'" مش موجود فى سلطان');
-    const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+    const repTreasId = await getRepTreasuryId();
     const { error } = await sb.from('expenses').insert({
       ref: 'REP-EXP-'+payload.ts, category_id: catId, amount: payload.amt,
       description: (payload.note||'') + ' (مندوب: '+(REP?.name||'')+')',
       expense_date: new Date(payload.ts).toISOString().slice(0,10),
-      status: 'confirmed', treasury_id: defTreas?.id || null, created_by: REP.id,
+      status: 'confirmed', treasury_id: repTreasId, created_by: REP.id,
     });
     if(error) throw error;
   },
@@ -1230,7 +1251,12 @@ async function verifyRepStillActive(userId){
       return;
     }
     const freshName = profile.name || profile.email;
-    if(freshName!==REP.name){ REP.name=freshName; LS.s('rep',REP); }
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code)').eq('id', userId).maybeSingle();
+    const freshTreas = repRow?.treasury_id||null, freshLevel = repRow?.price_levels?.code||null;
+    if(freshName!==REP.name || freshTreas!==REP.treasuryId || freshLevel!==REP.priceLevelCode){
+      REP.name=freshName; REP.treasuryId=freshTreas; REP.priceLevelCode=freshLevel;
+      LS.s('rep',REP);
+    }
   }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني في الخلفية المرة الجاية */ }
 }
 
