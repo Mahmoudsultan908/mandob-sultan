@@ -1101,6 +1101,11 @@ async function resolveRealCustomerId(localId, name, phone){
   return data.id;
 }
 
+// invoiceId محلي → id الفاتورة الحقيقي فى سلطان، بمجرد ما تتزامن — عشان
+// لو المندوب لغى الفاتورة بعد كده (confirmSoftDelete)، نقدر نلغيها فى
+// سلطان كمان بدل ما تفضل فاتورة حقيقية شغالة وهو شايفها ملغاة محلياً.
+let _invoiceIdMap = LS.g('invoiceIdMap') || {};
+
 const SYNC_HANDLERS = {
   sale: async (payload) => {
     const items = payload.items.filter(it => isRealSultanId(it.productId));
@@ -1115,7 +1120,7 @@ const SYNC_HANDLERS = {
     const { data: mainWh } = await sb.from('warehouses').select('id').eq('is_main', true).limit(1).maybeSingle();
     const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
 
-    const { error } = await sb.rpc('fn_create_sale', {
+    const { data, error } = await sb.rpc('fn_create_sale', {
       p_customer_id: realCustId,
       p_payment_type: payload.isDebt ? 'credit' : 'cash',
       p_subtotal: payload.subtotal,
@@ -1132,6 +1137,18 @@ const SYNC_HANDLERS = {
         unit_type: 'sale_unit', units_per_carton_snapshot: 1,
       })),
     });
+    if(error) throw error;
+    if(data && data[0] && payload.invoiceId){
+      _invoiceIdMap[payload.invoiceId] = data[0].id;
+      LS.s('invoiceIdMap', _invoiceIdMap);
+    }
+  },
+
+  // إلغاء فاتورة اتزامنت بالفعل — بيستخدم نفس مسار الإلغاء اللي شاشة
+  // المبيعات فى سلطان نفسها بتستخدمه (UPDATE status='cancelled')،
+  // والـ trigger هو اللي بيرجّع المخزون/الرصيد صح
+  cancel_sale: async (payload) => {
+    const { error } = await sb.from('sales').update({ status:'cancelled' }).eq('id', payload.realSaleId);
     if(error) throw error;
   },
 
@@ -2218,9 +2235,32 @@ function confirmSoftDelete(invId){
   GOAL.achieved=calcAchieved(); LS.s('goal',GOAL);
   auditLog('إلغاء فاتورة (Soft Delete)',`${invId} — ${fmt(totalVoided)} ج — ${reason||'بدون سبب'}`);
   tgVoidInvoice(invId,totalVoided,reason);
+  cancelSyncedInvoice(invId);
   saveDay(); closeModal();
   toast(`🚫 تم إلغاء الفاتورة ${invId}`);
   r_ledger();
+}
+
+// ★ الإلغاء المحلي فوق ده مايكفيش لوحده — لازم نلغي الفاتورة فى سلطان
+// كمان لو كانت اتزامنت بالفعل، وإلا هتفضل فاتورة حقيقية شغالة هناك
+// وهو شايفها ملغاة عنده. 3 حالات: (1) لسه فى الطابور معلّقة — نشيلها
+// خالص، ماتتزامنش أصلاً. (2) اتزامنت بالفعل (عندنا realSaleId محفوظ) —
+// نضيف طلب إلغاء حقيقي. (3) اتزامنت قبل ما الميزة دي تتعمل أصلاً (مفيش
+// mapping محفوظ) — مفيش حاجة نعملها غير تسجيلها فى console كتنبيه.
+function cancelSyncedInvoice(invId){
+  const pendingIdx = SYNC_QUEUE.findIndex(e=>e.kind==='sale' && e.payload?.invoiceId===invId && e.status==='pending');
+  if(pendingIdx>=0){
+    SYNC_QUEUE.splice(pendingIdx,1);
+    saveSyncQueue();
+    updateSyncBadge();
+    return;
+  }
+  const realSaleId = _invoiceIdMap[invId];
+  if(realSaleId && REP){
+    queueSync('cancel_sale', { realSaleId, invoiceId: invId });
+  } else if(REP){
+    console.warn('[sync] فاتورة اتلغت محلياً بس معندناش ربط بفاتورة سلطان الحقيقية:', invId);
+  }
 }
 
 function showEditInvoice(invId){
