@@ -348,6 +348,7 @@ function pinTap(e,v){}
     </div>
     <div class="hdr-right" style="display:flex;align-items:center;gap:8px">
       <span id="net-dot" title="الاتصال" style="width:8px;height:8px;border-radius:50%;background:var(--g);display:inline-block;flex-shrink:0;transition:background .3s"></span>
+      <span id="sync-dot" onclick="trySyncQueue()" style="display:none;font-size:11px;color:var(--gold);cursor:pointer;white-space:nowrap"></span>
       <div class="day-badge day-none" id="day-badge" onclick="dayBadgeClick()" style="cursor:pointer">لا يوجد يوم</div>
     </div>
   </div>
@@ -1000,6 +1001,206 @@ window.manualSyncCustomers = async function(){
   if(document.getElementById('pg-stores')?.classList.contains('on')) r_stores();
 };
 
+// ══════════════════════════════════════════════════════════════════
+// مزامنة مخزون العربية من سلطان (سحب فقط) — نفس فلسفة مزامنة العملاء.
+// ★ مهم: بنحدّث بس الأصناف اللي أصلها من سلطان (_sultanSynced=true)،
+// عشان محدش يلمس أصناف محلية قديمة (مرفوعة يدوياً بملف Excel قبل الربط)
+// أو يبدّل قيمة صنف عليه عملية بيع لسه ما اتزامنتش (بنفوت المزامنة دي
+// لو فيه فواتير بيع معلّقة في الطابور، عشان ما نديش قراءة قديمة).
+// ══════════════════════════════════════════════════════════════════
+async function syncVanStockFromSultan(){
+  if(!REP || !navigator.onLine) return {added:0,updated:0,error:null};
+  if(SYNC_QUEUE.some(e=>e.kind==='sale' && e.status==='pending')) return {added:0,updated:0,error:null,skipped:true};
+  try{
+    const { data, error } = await sb.from('van_stock')
+      .select('product_id, qty, products(name, wholesale_price, unit)')
+      .eq('rep_id', REP.id);
+    if(error) return {added:0,updated:0,error:error.message};
+
+    let added=0, updated=0;
+    (data||[]).forEach(row=>{
+      const qty = Number(row.qty)||0;
+      const price = Number(row.products?.wholesale_price)||0;
+      let p = VAN_STOCK.find(x=>x.id===row.product_id);
+      if(!p){
+        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, qty, origQty:qty, unit:row.products?.unit||'', _sultanSynced:true});
+        added++;
+      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price)){
+        p.qty=qty; p.price=price; p.name=row.products?.name||p.name;
+        updated++;
+      }
+    });
+    if(added||updated) saveVanStock();
+    return {added,updated,error:null};
+  }catch(e){ return {added:0,updated:0,error:e.message}; }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// طابور المزامنة — العمليات المالية الحقيقية (بيع/تحصيل/مصروف)
+// نفس فلسفة sultan-erp/js/offline.js (queueWrite/trySync) لكن أبسط،
+// مبنية على LS زي باقي التطبيق بدل IndexedDB (حجم بيانات مندوب واحد
+// صغير، مفيش داعي لتعقيد إضافي). write-through: العملية بتتسجّل محلياً
+// فوراً (زي ما هي دلوقتي بالظبط) وتتضاف للطابور فى نفس اللحظة —
+// الشاشة عمرها ما بتستنى رد الشبكة.
+// ══════════════════════════════════════════════════════════════════
+let SYNC_QUEUE = LS.g('sync_queue') || [];
+function saveSyncQueue(){ LS.s('sync_queue', SYNC_QUEUE); }
+
+// أنواع مرتبطة بمخزون العربية: لازم تتزامن بالترتيب ووقف عند أول فشل
+// (زي OFFLINE_STRICT_ORDER_KINDS فى سلطان ERP نفسها)
+const SYNC_STRICT_ORDER_KINDS = ['sale'];
+
+function queueSync(kind, payload){
+  const entry = { id: uid(), kind, payload, status:'pending', attempts:0, error:null, createdAt: Date.now() };
+  SYNC_QUEUE.push(entry);
+  saveSyncQueue();
+  updateSyncBadge();
+  if(navigator.onLine) trySyncQueue();
+  return entry.id;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isRealSultanId(id){ return !!id && UUID_RE.test(id); }
+
+// اسم الأصناف المحلية القديمة (اختصار) → الاسم الحقيقي فى expense_categories
+const EXP_CAT_MAP = {
+  'بنزين':'بنزين', 'أكل':'أكل', 'شاي':'شاي',
+  'مصروف طريق':'مصروف طريق', 'تحميل':'تحميل ميداني', 'أخرى':'مصروفات ميدانية أخرى',
+};
+let _expCatCache = null;
+async function resolveExpenseCategoryId(localCat){
+  if(!_expCatCache){
+    const { data } = await sb.from('expense_categories').select('id,name');
+    _expCatCache = data || [];
+  }
+  const realName = EXP_CAT_MAP[localCat] || localCat;
+  return _expCatCache.find(c=>c.name===realName)?.id || null;
+}
+
+// عميل محلي (custId مش UUID حقيقي) → إنشاء عميل حقيقي فى سلطان أول مرة
+// بس، وحفظ الربط محلياً عشان أي فاتورة/تحصيل تاني لنفس العميل يستخدم
+// نفس الـ id الحقيقي بدل ما يتكرر عميل بنفس الاسم كل مرة.
+let _custIdMap = LS.g('custIdMap') || {};
+async function resolveRealCustomerId(localId, name, phone){
+  if(!localId) return null;
+  if(isRealSultanId(localId)) return localId;
+  if(_custIdMap[localId]) return _custIdMap[localId];
+
+  const { data, error } = await sb.from('customers').insert({
+    name: name || 'عميل مندوب', phone: phone || null,
+    default_rep_id: REP.id, balance: 0,
+  }).select('id').single();
+  if(error) throw new Error('تعذّر إنشاء العميل فى سلطان: '+error.message);
+
+  _custIdMap[localId] = data.id;
+  LS.s('custIdMap', _custIdMap);
+  // حدّث الـ id محلياً كمان فى CUSTOMERS/STORES عشان القوائم المحلية تتماشى
+  const cu = CUSTOMERS.find(c=>c.id===localId); if(cu) cu.id = data.id;
+  const st = STORES.find(s=>s.id===localId); if(st) st.id = data.id;
+  LS.s('customers',CUSTOMERS); LS.s('stores',STORES);
+  return data.id;
+}
+
+const SYNC_HANDLERS = {
+  sale: async (payload) => {
+    const items = payload.items.filter(it => isRealSultanId(it.productId));
+    if(items.length !== payload.items.length){
+      throw new Error('فيه أصناف فى الفاتورة دي لسه مش متزامنة من سلطان (مرفوعة يدوياً قديماً) — اعمل مزامنة مخزون العربية وحاول تاني');
+    }
+    if(!items.length) throw new Error('لا يوجد أصناف صالحة للمزامنة فى الفاتورة دي');
+
+    const realCustId = payload.custId ? await resolveRealCustomerId(payload.custId, payload.custName, payload.custPhone) : null;
+    if(payload.isDebt && !realCustId) throw new Error('فاتورة آجل بدون عميل حقيقي — تعذّرت المزامنة');
+
+    const { data: mainWh } = await sb.from('warehouses').select('id').eq('is_main', true).limit(1).maybeSingle();
+    const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+
+    const { error } = await sb.rpc('fn_create_sale', {
+      p_customer_id: realCustId,
+      p_payment_type: payload.isDebt ? 'credit' : 'cash',
+      p_subtotal: payload.subtotal,
+      p_vat_amount: 0,
+      p_total: payload.total,
+      p_discount: payload.discount || 0,
+      p_warehouse_id: mainWh?.id || null,
+      p_rep_id: REP.id,
+      p_treasury_id: payload.isDebt ? null : (defTreas?.id || null), // آجل مالوش أثر على الخزنة، زي sales.js بالظبط
+      p_source_app: 'rep_van',
+      p_created_by: REP.id,
+      p_items: items.map(it => ({
+        product_id: it.productId, qty: it.qty, unit_price: it.unitPrice, line_total: it.lineTotal,
+        unit_type: 'sale_unit', units_per_carton_snapshot: 1,
+      })),
+    });
+    if(error) throw error;
+  },
+
+  collection: async (payload) => {
+    const realCustId = await resolveRealCustomerId(payload.custId, payload.custName, null);
+    if(!realCustId) throw new Error('تحصيل بدون عميل حقيقي — تعذّرت المزامنة');
+    const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+    const { error } = await sb.from('customer_payments').insert({
+      ref: 'REP-COL-'+payload.ts, customer_id: realCustId, amount: payload.amt,
+      status: 'confirmed', treasury_id: defTreas?.id || null, created_by: REP.id,
+    });
+    if(error) throw error;
+  },
+
+  expense: async (payload) => {
+    const catId = await resolveExpenseCategoryId(payload.cat);
+    if(!catId) throw new Error('تصنيف المصروف "'+payload.cat+'" مش موجود فى سلطان');
+    const { data: defTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+    const { error } = await sb.from('expenses').insert({
+      ref: 'REP-EXP-'+payload.ts, category_id: catId, amount: payload.amt,
+      description: (payload.note||'') + ' (مندوب: '+(REP?.name||'')+')',
+      expense_date: new Date(payload.ts).toISOString().slice(0,10),
+      status: 'confirmed', treasury_id: defTreas?.id || null, created_by: REP.id,
+    });
+    if(error) throw error;
+  },
+};
+
+let _syncingQueue = false;
+async function trySyncQueue(){
+  if(_syncingQueue || !REP || !navigator.onLine) return;
+  _syncingQueue = true;
+  try{
+    const pending = SYNC_QUEUE.filter(e => e.status==='pending').sort((a,b)=>a.createdAt-b.createdAt);
+    for(const entry of pending){
+      const handler = SYNC_HANDLERS[entry.kind];
+      if(!handler) continue;
+      try{
+        await handler(entry.payload);
+        SYNC_QUEUE = SYNC_QUEUE.filter(e=>e.id!==entry.id);
+        saveSyncQueue();
+      }catch(err){
+        entry.attempts = (entry.attempts||0)+1;
+        entry.error = err.message || String(err);
+        saveSyncQueue();
+        if(SYNC_STRICT_ORDER_KINDS.includes(entry.kind)) break; // رتيب حرج، مانكملش لللي بعده
+      }
+    }
+    if(!SYNC_QUEUE.some(e=>e.kind==='sale')) syncVanStockFromSultan();
+  } finally {
+    _syncingQueue = false;
+    updateSyncBadge();
+  }
+}
+
+function updateSyncBadge(){
+  const pending = SYNC_QUEUE.filter(e=>e.status==='pending').length;
+  const failed = SYNC_QUEUE.filter(e=>e.attempts>0).length;
+  const d = document.getElementById('sync-dot');
+  if(!d) return;
+  if(!pending){ d.style.display='none'; return; }
+  d.style.display='inline-block';
+  d.textContent = failed ? `⚠️ ${pending}` : `⏳ ${pending}`;
+  d.title = failed ? 'فيه عمليات فشلت فى المزامنة — راجعها' : 'عمليات معلّقة هتتزامن أول ما النت يرجع';
+}
+
+window.addEventListener('online', () => trySyncQueue());
+setInterval(() => { if(navigator.onLine) trySyncQueue(); }, 30000);
+
 async function verifyRepStillActive(userId){
   try{
     const { data:profile } = await sb.from('profiles').select('is_active,role,name,email').eq('id', userId).maybeSingle();
@@ -1139,7 +1340,13 @@ function launchApp(){
   autoBackup();
   setTimeout(updateNetDot, 300);
   if(NEEDS_SULTAN_LINK) showLinkSultanBanner();
-  if(REP) syncCustomersFromSultan(); // في الخلفية، من غير ما يوقف فتح التطبيق
+  if(REP){
+    // كل ده فى الخلفية، من غير ما يوقف فتح التطبيق
+    syncCustomersFromSultan();
+    syncVanStockFromSultan();
+    trySyncQueue();
+    updateSyncBadge();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1719,6 +1926,7 @@ function executeSell(isDebt){
 
   const invoiceId='INV-'+Date.now();
   let billT=0;
+  const syncItems=[];
   cart.forEach(c=>{
     const p=vanFind(c.prodId); if(!p)return;
     const{unit,total,offer}=cprice(c.prodId,c.qty);
@@ -1728,6 +1936,7 @@ function executeSell(isDebt){
     billT+=total;
     if(isDebt&&custId){const cu=CUSTOMERS.find(x=>x.id===custId);if(cu)cu.debt=(cu.debt||0)+total;}
     CDAY.sales.push({id:uid(),prodId:p.id,name:p.name,emoji:p.emoji,qty:c.qty,giftQty:gq,unit,total,custName,custId,debt:isDebt,ts:Date.now(),invoiceId,void:false});
+    syncItems.push({productId:p.id, qty:c.qty, unitPrice:unit, lineTotal:total, freeQty:gq});
   });
 
   let discAmt=(window._checkoutDisc)||0;
@@ -1739,6 +1948,18 @@ function executeSell(isDebt){
 
   LS.s('customers',CUSTOMERS);
   saveVanStock(); saveDay();
+
+  // ★ مزامنة حقيقية مع سلطان ERP — write-through: الفاتورة سُجّلت محلياً
+  // بالفعل فوق، دي مجرد إضافة للطابور، مش انتظار رد الشبكة
+  if(REP && syncItems.length){
+    const custPhone = custSel==='_new'
+      ? (document.getElementById('new-cust-phone')?.value.trim()||'')
+      : (CUSTOMERS.find(x=>x.id===custId)?.phone||'');
+    queueSync('sale', {
+      invoiceId, custId: custId||null, custName, custPhone, isDebt,
+      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(),
+    });
+  }
   // Telegram notification
   const saleLines = cart.map(c=>{
     const p=vanFind(c.prodId);
@@ -2066,8 +2287,10 @@ function doCollect(){
     LS.s('stores',STORES);
   }
   if(c&&remaining>0){c.debt=Math.max(0,(c.debt||0)-remaining);LS.s('customers',CUSTOMERS);}
-  CDAY.collections.push({id:uid(),custName:c?.name||'',custId,amt,ts:Date.now()});
+  const colTs=Date.now();
+  CDAY.collections.push({id:uid(),custName:c?.name||'',custId,amt,ts:colTs});
   saveDay();
+  if(REP) queueSync('collection', {custId, custName:c?.name||'', amt, ts:colTs});
   tgCollect(c?.name||'عميل', amt);
   toast(`✅ تحصيل ${fmt(amt)} ج`); r_ledger();
 }
@@ -2127,9 +2350,11 @@ function doExpense(){
   const note=document.getElementById('exp-note')?.value.trim();
   if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
   if(amt<=0){toast('أدخل المبلغ','err');return;}
-  CDAY.expenses.push({id:uid(),cat,note,amt,ts:Date.now()});
+  const expTs=Date.now();
+  CDAY.expenses.push({id:uid(),cat,note,amt,ts:expTs});
   tgExpense(cat, amt);
   saveDay(); toast(`✅ مصروف ${cat}: ${fmt(amt)} ج`); r_ledger();
+  if(REP) queueSync('expense', {cat, note, amt, ts:expTs});
 }
 function onOldDebtCustChange(){
   const v=document.getElementById('old-debt-cust')?.value;
