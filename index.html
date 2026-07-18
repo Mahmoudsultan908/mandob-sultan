@@ -2285,7 +2285,13 @@ function cancelSyncedInvoice(invId){
   if(realSaleId && REP){
     queueSync('cancel_sale', { realSaleId, invoiceId: invId });
   } else if(REP){
-    console.warn('[sync] فاتورة اتلغت محلياً بس معندناش ربط بفاتورة سلطان الحقيقية:', invId);
+    // فاتورة اتزامنت قبل ما ربط invoiceId↔سلطان يتعمل (نسخة قديمة من التطبيق) —
+    // مفيش طريقة آمنة نلاقيها تلقائي من غير خطر إننا نلغي فاتورة غلط بالغلط،
+    // فلازم تنبيه واضح للمندوب بدل ما تختفي بصمت زي ما كانت بتعمل قبل كده
+    toast('⚠️ اتلغت هنا بس محتاجة إلغاء يدوي في سلطان ERP كمان (فاتورة قديمة)','err');
+    if(!CDAY.needsManualCancelSync) CDAY.needsManualCancelSync=[];
+    CDAY.needsManualCancelSync.push({invId, ts:Date.now()});
+    saveDay();
   }
 }
 
