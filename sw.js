@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v11 (خط السير كصفحة رئيسية بنفس شكل المحلات + تبويب أيام)
-const CACHE = 'mandob-sultan-v11';
+// مندوب سلطان — Service Worker v12 (ربط سلطان ERP: تسجيل دخول حقيقي + مزامنة فورية)
+const CACHE = 'mandob-sultan-v12';
 const ASSETS = [
   './',
   './index.html',

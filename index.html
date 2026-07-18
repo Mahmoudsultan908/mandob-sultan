@@ -4452,8 +4452,21 @@ window.addEventListener('load', updateNetDot);
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
     navigator.serviceWorker.register('./sw.js')
-      .then(reg => console.log('✅ SW registered:', reg.scope))
+      .then(reg => {
+        console.log('✅ SW registered:', reg.scope);
+        reg.update(); // اتحقق من نسخة جديدة فوراً، مش لما المتصفح يقرر لوحده
+      })
       .catch(err => console.log('SW skip (file://):', err.message));
+
+    // ★ لما نسخة SW جديدة تاخد السيطرة (بعد تحديث الكود)، لازم نعمل reload
+    // فعلي — من غير كده الصفحة المفتوحة بتفضل شغالة بالـ JS القديم اللي
+    // كان محمّل وقت الفتح، حتى لو الكاش نفسه اتحدّث فى الخلفية
+    let _swRefreshed = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if(_swRefreshed) return;
+      _swRefreshed = true;
+      location.reload();
+    });
   });
 }
 
