@@ -935,7 +935,7 @@ async function checkRepSession(){
     return true;
   }
 
-  const { data:profile, error } = await sb.from('profiles').select('id,role,is_active,full_name,email').eq('id', session.user.id).maybeSingle();
+  const { data:profile, error } = await sb.from('profiles').select('id,role,is_active,name,email').eq('id', session.user.id).maybeSingle();
   if(error){
     // مفيش نت ومفيش REP محلي متطابق (أول مرة على الجهاز ده) — لازم نت للدخول أول مرة
     return false;
@@ -949,14 +949,14 @@ async function checkRepSession(){
     await sb.auth.signOut();
     return false;
   }
-  REP = { id: profile.id, name: profile.full_name || profile.email };
+  REP = { id: profile.id, name: profile.name || profile.email };
   LS.s('rep', REP);
   return true;
 }
 
 async function verifyRepStillActive(userId){
   try{
-    const { data:profile } = await sb.from('profiles').select('is_active,role,full_name,email').eq('id', userId).maybeSingle();
+    const { data:profile } = await sb.from('profiles').select('is_active,role,name,email').eq('id', userId).maybeSingle();
     if(!profile || profile.role!=='rep' || profile.is_active===false){
       await sb.auth.signOut();
       LS.rm('rep'); REP=null;
@@ -965,7 +965,7 @@ async function verifyRepStillActive(userId){
       setTimeout(()=>location.reload(), 2000);
       return;
     }
-    const freshName = profile.full_name || profile.email;
+    const freshName = profile.name || profile.email;
     if(freshName!==REP.name){ REP.name=freshName; LS.s('rep',REP); }
   }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني في الخلفية المرة الجاية */ }
 }
