@@ -251,6 +251,23 @@ function pinTap(e,v){}
 <input type="file" id="g-bak" accept=".json" style="display:none" onchange="onBakFile(this)">
 
 <!-- ══ PIN SCREEN ══ -->
+<!-- ══ SULTAN ACCOUNT LOGIN (real Supabase Auth — يحل محل الاسم الحر القديم) ══ -->
+<div id="auth-screen" class="screen hidden">
+  <div style="width:100%;max-width:340px">
+    <div class="pin-logo" style="text-align:center">👑</div>
+    <div class="pin-title" style="text-align:center">تسجيل الدخول</div>
+    <div class="pin-sub" style="text-align:center;margin-bottom:24px">بيانات حسابك في نظام سلطان</div>
+    <div class="ig"><div class="il">البريد الإلكتروني</div>
+      <input type="email" id="auth-email" class="ifield" dir="ltr" placeholder="example@sultan.com" autocomplete="username"></div>
+    <div class="ig" style="margin-bottom:18px"><div class="il">كلمة المرور</div>
+      <input type="password" id="auth-pass" class="ifield" dir="ltr" placeholder="••••••" autocomplete="current-password"></div>
+    <button class="btn btn-g btn-xl" id="auth-btn" onclick="doRepLogin()">دخول 🚀</button>
+    <button class="btn btn-b btn-lg" id="auth-cancel-btn" style="margin-top:8px;display:none" onclick="cancelSultanLink()">لاحقاً</button>
+    <div class="pin-err" id="auth-err" style="margin-top:12px"></div>
+    <div style="margin-top:14px;font-size:12px;color:var(--t3);text-align:center">بيانات الدخول بتتاخد من مدير النظام في سلطان ERP</div>
+  </div>
+</div>
+
 <div id="pin-screen" class="screen">
   <div class="pin-logo">🚗</div>
   <div class="pin-title" id="ps-title">مندوب سلطان</div>
@@ -282,8 +299,8 @@ function pinTap(e,v){}
   <div style="width:100%;max-width:380px">
     <div style="font-size:36px;text-align:center;margin-bottom:8px">🚀</div>
     <div style="font-size:20px;font-weight:900;color:var(--gold);text-align:center;margin-bottom:4px">إعداد النظام</div>
-    <div style="font-size:13px;color:var(--t2);text-align:center;margin-bottom:24px">أول تشغيل — أدخل بياناتك</div>
-    <div class="ig"><div class="il">اسم المندوب</div><input type="text" id="su-name" class="ifield" placeholder="الاسم الكامل"></div>
+    <div style="font-size:13px;color:var(--t2);text-align:center;margin-bottom:24px">أول تشغيل — أكمل بياناتك</div>
+    <div class="al al-teal" style="margin-bottom:16px;text-align:center" id="su-rep-name">مسجّل دخول باسم: —</div>
     <div class="ig"><div class="il">اسم الخط / المنطقة</div><input type="text" id="su-route" class="ifield" placeholder="مثال: خط حلوان"></div>
     <div class="ig"><div class="il">رمز الدخول (4 أرقام)</div><input type="number" id="su-pin" class="ifield" placeholder="مثال: 1234"></div>
     <div class="ig"><div class="il">رمز المدير (6 أرقام)</div><input type="number" id="su-admin" class="ifield" placeholder="مثال: 236091"></div>
@@ -369,8 +386,15 @@ function pinTap(e,v){}
 <div id="toast"></div>
 
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <script>
+// ══════════════════════════════════════════════════════════════════
+// SULTAN ERP — shared Supabase backend (نفس قاعدة بيانات سلطان تماماً)
+// ══════════════════════════════════════════════════════════════════
+const SUPABASE_URL = 'https://fanaozxqlodzfdgstwaz.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_xt2yyOGAwKhFRlR6WM9a8Q_T9UOXPBi';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 // ══════════════════════════════════════════════════════════════════
 // TOUCH HELPERS — must be declared first, used by HTML ontouchstart
 // ══════════════════════════════════════════════════════════════════
@@ -407,6 +431,8 @@ const LS = {
 // ══════════════════════════════════════════════════════════════════
 // STATE
 // ══════════════════════════════════════════════════════════════════
+let REP       = LS.g('rep')       || null;   // {id,name} — من حساب سلطان الحقيقي (auth.uid())، مش اسم حر محلي
+let NEEDS_SULTAN_LINK = false; // مستخدم حالي (CFG موجود) لسه ما ربطش حساب سلطان — بيكمّل شغله عادي مع تذكير غير مزعج
 let CFG       = LS.g('cfg')       || null;   // {name,route,pin,adminPin,tgToken,tgChatId,lockDays,editMins,visitsTarget}
 let DAYS      = LS.g('days')      || {};
 let CUSTOMERS = LS.g('customers') || [];
@@ -875,23 +901,122 @@ function checkPin(){
 function showSetup(){
   document.getElementById('pin-screen').classList.add('hidden');
   document.getElementById('setup-screen').classList.remove('hidden');
+  document.getElementById('su-rep-name').textContent='مسجّل دخول باسم: '+(REP?.name||'—');
 }
 function finishSetup(){
-  const name  = document.getElementById('su-name').value.trim();
   const route = document.getElementById('su-route').value.trim();
   const pin   = document.getElementById('su-pin').value.trim();
   const adm   = document.getElementById('su-admin').value.trim();
   const adm2  = document.getElementById('su-admin2').value.trim();
-  if(!name){toast('اكتب اسمك','err');return;}
+  if(!REP?.name){toast('لازم تسجّل دخول الأول','err');return;}
   if(pin.length!==4||isNaN(pin)){toast('الرمز لازم 4 أرقام','err');return;}
   if(adm.length!==6||isNaN(adm)){toast('رمز المدير لازم 6 أرقام','err');return;}
   if(adm!==adm2){toast('رمز المدير مش متطابق','err');return;}
-  CFG={name,route,pin,adminPin:adm};
+  CFG={name:REP.name,route,pin,adminPin:adm};
   LS.s('cfg',CFG);
   sessionStorage.setItem('sx_auth','1');
   document.getElementById('setup-screen').classList.add('hidden');
   launchApp();
 }
+
+// ══════════════════════════════════════════════════════════════════
+// SULTAN ACCOUNT LOGIN — real Supabase Auth (Phase 1/2 من ربط الأنظمة)
+// ══════════════════════════════════════════════════════════════════
+// عند وجود جلسة Supabase محفوظة بالفعل، بيتحقق منها بدون ما يطلب نت
+// (getSession بيقرا من التخزين المحلي)، فالاستخدام اليومي بيفضل شغال أوفلاين.
+// أول تسجيل دخول بس هو اللي محتاج نت فعلي. فحص is_active الحقيقي بيحصل
+// في الخلفية لما يبقى فيه نت (verifyRepStillActive) — مش شرط لفتح التطبيق.
+async function checkRepSession(){
+  const { data:{ session } } = await sb.auth.getSession();
+  if(!session) return false;
+
+  if(REP && REP.id===session.user.id){
+    if(navigator.onLine) verifyRepStillActive(session.user.id);
+    return true;
+  }
+
+  const { data:profile, error } = await sb.from('profiles').select('id,role,is_active,full_name,email').eq('id', session.user.id).maybeSingle();
+  if(error){
+    // مفيش نت ومفيش REP محلي متطابق (أول مرة على الجهاز ده) — لازم نت للدخول أول مرة
+    return false;
+  }
+  if(!profile || profile.role!=='rep'){
+    await sb.auth.signOut();
+    return false;
+  }
+  if(profile.is_active===false){
+    document.getElementById('auth-err').textContent='الحساب معطّل — راجع مدير النظام';
+    await sb.auth.signOut();
+    return false;
+  }
+  REP = { id: profile.id, name: profile.full_name || profile.email };
+  LS.s('rep', REP);
+  return true;
+}
+
+async function verifyRepStillActive(userId){
+  try{
+    const { data:profile } = await sb.from('profiles').select('is_active,role,full_name,email').eq('id', userId).maybeSingle();
+    if(!profile || profile.role!=='rep' || profile.is_active===false){
+      await sb.auth.signOut();
+      LS.rm('rep'); REP=null;
+      sessionStorage.removeItem('sx_auth');
+      toast('تم تعطيل الحساب — يرجى تسجيل الدخول من جديد','err');
+      setTimeout(()=>location.reload(), 2000);
+      return;
+    }
+    const freshName = profile.full_name || profile.email;
+    if(freshName!==REP.name){ REP.name=freshName; LS.s('rep',REP); }
+  }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني في الخلفية المرة الجاية */ }
+}
+
+window.doRepLogin = async function(){
+  const email = document.getElementById('auth-email').value.trim();
+  const pass  = document.getElementById('auth-pass').value;
+  const errEl = document.getElementById('auth-err');
+  const btn   = document.getElementById('auth-btn');
+  errEl.textContent='';
+  if(!email || !pass){ errEl.textContent='اكتب البريد وكلمة المرور'; return; }
+
+  btn.textContent='⏳ جاري الدخول...'; btn.disabled=true;
+  try{
+    const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+    if(error) throw error;
+    const ok = await checkRepSession();
+    if(!ok){
+      errEl.textContent = errEl.textContent || 'الحساب ده مش مسجّل كمندوب مبيعات';
+      return;
+    }
+    document.getElementById('auth-screen').classList.add('hidden');
+
+    if(_linkingExistingUser){
+      // مستخدم حالي كان شغال محلي وبيربط حسابه دلوقتي — نكمّل شغله زي ما هو
+      _linkingExistingUser=false;
+      NEEDS_SULTAN_LINK=false;
+      CFG.name=REP.name; LS.s('cfg',CFG);
+      document.getElementById('hdr-name').textContent='🚗 '+CFG.name;
+      document.getElementById('sultan-link-banner')?.remove();
+      toast('✅ اتربط حسابك بسلطان ERP بنجاح');
+      return;
+    }
+
+    if(!CFG) showSetup(); else {
+      document.getElementById('pin-screen').classList.remove('hidden');
+    }
+  }catch(ex){
+    errEl.textContent = ex.message==='Invalid login credentials' ? 'بريد أو كلمة مرور غلط' : ('خطأ: '+ex.message);
+  }finally{
+    btn.textContent='دخول 🚀'; btn.disabled=false;
+  }
+};
+
+window.repLogout = async function(){
+  if(!confirm('تسجيل الخروج من حساب سلطان؟')) return;
+  await sb.auth.signOut();
+  LS.rm('rep'); REP=null;
+  sessionStorage.removeItem('sx_auth');
+  location.reload();
+};
 
 // ══════════════════════════════════════════════════════════════════
 // PIN SYSTEM — event delegation + touchstart (no 300ms delay)
@@ -967,7 +1092,43 @@ function launchApp(){
   go('sell', document.querySelector('.nb'));
   autoBackup();
   setTimeout(updateNetDot, 300);
+  if(NEEDS_SULTAN_LINK) showLinkSultanBanner();
 }
+
+// ══════════════════════════════════════════════════════════════════
+// ربط حساب سلطان لمستخدم حالي (مش تسجيل دخول أول مرة) — تذكير غير مزعج
+// ══════════════════════════════════════════════════════════════════
+function showLinkSultanBanner(){
+  if(document.getElementById('sultan-link-banner')) return;
+  const b=document.createElement('div');
+  b.id='sultan-link-banner';
+  b.innerHTML=`
+    <div style="position:fixed;top:0;left:0;right:0;z-index:9500;
+      background:linear-gradient(135deg,#7C3AED,#5B21B6);color:#fff;
+      padding:10px 14px;display:flex;align-items:center;gap:10px;
+      font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
+      <span style="font-size:20px">👑</span>
+      <div style="flex:1">اربط حسابك بسلطان ERP عشان مبيعاتك تتسجل عندهم أوتوماتيك</div>
+      <button onclick="linkSultanAccount()" style="background:#fff;color:#5B21B6;border:none;
+        border-radius:8px;padding:7px 14px;font-family:Cairo,sans-serif;font-size:12px;
+        font-weight:900;cursor:pointer">ربط الآن</button>
+      <button onclick="document.getElementById('sultan-link-banner').remove()"
+        style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:2px 6px">✕</button>
+    </div>`;
+  document.body.appendChild(b);
+}
+
+let _linkingExistingUser=false;
+window.linkSultanAccount = function(){
+  _linkingExistingUser=true;
+  document.getElementById('auth-cancel-btn').style.display='block';
+  document.getElementById('auth-screen').classList.remove('hidden');
+};
+window.cancelSultanLink = function(){
+  _linkingExistingUser=false;
+  document.getElementById('auth-cancel-btn').style.display='none';
+  document.getElementById('auth-screen').classList.add('hidden');
+};
 
 function updateDayBadge(){
   const b=document.getElementById('day-badge');
@@ -3060,11 +3221,12 @@ function r_more(){
   </div>
   <div class="sec">
     <div class="st">⚙️ الإعدادات</div>
-    <div class="ig"><div class="il">اسمك</div><input type="text" id="cfg-name" class="ifield" value="${CFG?.name||''}"></div>
+    <div class="al al-teal" style="margin-bottom:10px">👤 حساب سلطان: ${REP?.name||'—'}</div>
     <div class="ig"><div class="il">الخط</div><input type="text" id="cfg-route" class="ifield" value="${CFG?.route||''}"></div>
     <div class="ig"><div class="il">PIN جديد (4 أرقام)</div><input type="number" id="cfg-pin" class="ifield" placeholder="اتركه فارغاً إذا لا تريد التغيير"></div>
     <button class="btn btn-b btn-lg" style="margin-bottom:10px" onclick="saveCfg()">حفظ الإعدادات</button>
-    <button class="btn btn-adm btn-lg" onclick="requireAdmin('إعدادات المدير',showAdminCfg)">⚙️ إعدادات المدير 🔐</button>
+    <button class="btn btn-adm btn-lg" style="margin-bottom:10px" onclick="requireAdmin('إعدادات المدير',showAdminCfg)">⚙️ إعدادات المدير 🔐</button>
+    <button class="btn btn-r btn-lg" onclick="repLogout()">🚪 تسجيل خروج من حساب سلطان</button>
   </div>
   <div class="sec">
     <div class="st">📱 تليجرام — رقابة فورية</div>
@@ -3119,10 +3281,9 @@ function r_more(){
 }
 
 function saveCfg(){
-  const name=document.getElementById('cfg-name')?.value.trim();
   const route=document.getElementById('cfg-route')?.value.trim();
   const pin=document.getElementById('cfg-pin')?.value.trim();
-  if(name)CFG.name=name;
+  CFG.name=REP?.name||CFG.name;
   if(route)CFG.route=route;
   if(pin&&pin.length===4)CFG.pin=pin;
   LS.s('cfg',CFG);
@@ -3965,18 +4126,32 @@ function noDayHtml(){
 // ══════════════════════════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════════════════════════
-(function init(){
+(async function init(){
+  // جهاز جديد تماماً (مفيش CFG محلي أصلاً) → لازم حساب سلطان حقيقي من الأول.
+  // جهاز فيه مستخدم حالي شغال بالفعل (CFG موجود) → يكمّل عادي زي ما هو،
+  // من غير ما نوقفه، وبيتفكّر بربط حسابه لما يبقى مناسب — عشان محدش يتقفل
+  // بره التطبيق بتاعه فجأة بسبب تحديث.
+  const hasSession = await checkRepSession();
+  if(!hasSession){
+    if(CFG){
+      NEEDS_SULTAN_LINK = true;
+    } else {
+      document.getElementById('pin-screen').classList.add('hidden');
+      document.getElementById('auth-screen').classList.remove('hidden');
+      return;
+    }
+  }
+
   // Already authenticated this session?
   if(sessionStorage.getItem('sx_auth')==='1'){
     document.getElementById('pin-screen').classList.add('hidden');
     if(!CFG) showSetup(); else launchApp();
     return;
   }
-  // First time ever
+  // First time ever (بعد تسجيل الدخول الحقيقي، لسه محتاج يضبط الخط/PIN)
   if(!CFG){
-    document.getElementById('ps-title').textContent='أهلاً بك 👋';
-    document.getElementById('ps-sub').textContent='اضغط أي 4 أرقام للبدء';
-    document.getElementById('ps-hint').textContent='ستُضبط الإعدادات في الخطوة التالية';
+    showSetup();
+    return;
   }
 })();
 
