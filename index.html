@@ -1252,6 +1252,20 @@ const SYNC_HANDLERS = {
     });
     if(error) throw error;
   },
+
+  // حالة الزيارة اليومية — مش عملية مالية، فمنستناش عميل محلي جديد (لو
+  // العميل لسه مش متزامن من سلطان، بنتجاهل بهدوء لحد ما يتزامن هو نفسه)
+  visit: async (payload) => {
+    if(!isRealSultanId(payload.custId)) return;
+    const st = payload.statuses.includes('sold') ? 'visited'
+      : payload.statuses.length ? (payload.statuses.length===1 && payload.statuses.includes('reject') ? 'skipped' : 'visited')
+      : 'planned';
+    const { error } = await sb.from('rep_visits').upsert({
+      rep_id: REP.id, customer_id: payload.custId, visit_date: payload.date,
+      status: st, notes: payload.statuses.join(' + ')||null, checked_in_at: new Date(payload.ts).toISOString(),
+    }, { onConflict: 'rep_id,customer_id,visit_date' });
+    if(error) throw error;
+  },
 };
 
 let _syncingQueue = false;
@@ -3188,6 +3202,9 @@ function visitStore(i,status){
 
   LS.s('stores',STORES); saveDay();
   tgVisit(STORES[i].name, entry.statuses.join(' + ')||'pending');
+  // ★ مزامنة حالة الزيارة مع سلطان ERP — عشان الأدمن يقدر يشوف مين اتزار
+  // النهاردة وباعله ولا لأ من غير ما يستنى تليفون المندوب
+  if(REP) queueSync('visit', { custId: STORES[i].id, custName: STORES[i].name, statuses: entry.statuses.slice(), date: TODAY, ts: entry.ts });
   r_stores();
 }
 function addStore(withGPS){
