@@ -654,9 +654,6 @@ function tgVoidInvoice(invoiceId, amt, reason){
 function tgEditInvoice(invoiceId, oldAmt, newAmt){
   TG.notify(tgHeader('🚨','تعديل فاتورة')+`\n🔢 ${invoiceId}\n📊 القديم: ${fmt(oldAmt)} ج ← الجديد: ${fmt(newAmt)} ج`);
 }
-function tgOldDebt(custName, amt){
-  TG.notify(tgHeader('💰','تسجيل دين قديم')+`\n🏪 ${custName}\n💵 <b>${fmt(amt)} ج</b>`);
-}
 function tgTest(){
   TG.notify(tgHeader('✅','اتصال ناجح')+`\n🚗  مندوب سلطان يعمل بشكل مثالي\n📅 ${TODAY}`);
   toast('✅ رسالة تجربة أُرسلت للتليجرام');
@@ -800,15 +797,14 @@ function clearAllPrevInvoices(){
 // ══════════════════════════════════════════════════════════════════
 // ── صفحة الديون القديمة (منفصلة) ────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════
+// عرض فقط — الرصيد الافتتاحي (oldDebt) بيتزامن من رصيد العميل الحقيقي
+// فى سلطان ERP (customers.balance)، وأي تصحيح/تسوية بيتعمل من هناك.
 function showOldDebtsPage(){
   const withDebt = STORES.filter(s=>(s.oldDebt||0)>0).sort((a,b)=>(b.oldDebt||0)-(a.oldDebt||0));
   const rows = withDebt.length ? withDebt.map(s=>`
     <div style="padding:10px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center">
       <div><div style="font-weight:700;font-size:14px">${s.name}</div>${s.phone?`<div style="font-size:11px;color:var(--t3)">${s.phone}</div>`:''}</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-weight:900;color:var(--orange)">${fmt(s.oldDebt)} ج</span>
-        <button onclick="requireAdmin('مسح دين قديم',()=>clearOldDebt('${s.id}'))" style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:Cairo,sans-serif">مسح 🔐</button>
-      </div>
+      <span style="font-weight:900;color:var(--orange)">${fmt(s.oldDebt)} ج</span>
     </div>`).join('') : '<div style="text-align:center;color:var(--t3);padding:20px;font-size:14px">مفيش ديون قديمة مسجلة</div>';
 
   openModal(`
@@ -816,40 +812,16 @@ function showOldDebtsPage(){
       <div style="font-size:17px;font-weight:900;color:var(--orange)">💰 الديون القديمة</div>
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
-    <div class="sec" style="margin-bottom:14px">
-      <div class="st">➕ إضافة دين قديم لعميل</div>
-      <div class="ig"><div class="il">اسم العميل</div>
-        <select id="old-debt-cust" class="ifield" onchange="onOldDebtCustChange()">
-          <option value="">اختر عميل موجود</option>
-          ${CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}
-          <option value="_new">+ عميل جديد</option>
-        </select>
-      </div>
-      <div id="old-debt-new-row" style="display:none;margin-bottom:8px">
-        <input type="text" id="old-debt-new-name" class="ifield" placeholder="اسم العميل الجديد">
-      </div>
-      <div class="ig" style="margin-bottom:10px"><div class="il">المبلغ المطلوب (ج)</div><input type="number" id="ledger-old-debt-amt" class="ifield" placeholder="مثال: 800"></div>
-      <button class="btn btn-o btn-lg" style="width:100%" onclick="addOldDebtFromLedger()">تسجيل الدين القديم 💰</button>
-    </div>
-    <div class="sec" style="max-height:42vh;overflow-y:auto">
+    <div class="al al-teal" style="margin-bottom:14px">بتتزامن تلقائي من سلطان ERP — أي تصحيح أو تسوية بيتعمل من هناك</div>
+    <div class="sec" style="max-height:60vh;overflow-y:auto">
       <div class="st">📋 الديون القديمة المسجلة (${withDebt.length})</div>
       ${rows}
     </div>`);
-}
-function clearOldDebt(storeId){
-  const s=STORES.find(x=>x.id===storeId);
-  if(!s) return;
-  auditLog('مسح دين قديم', `${s.name} — ${fmt(s.oldDebt||0)} ج`);
-  s.oldDebt=0;
-  LS.s('stores',STORES);
-  toast('✅ اتمسح الدين القديم');
-  showOldDebtsPage();
 }
 
 function saveDay(){ if(CDAY){ const key=CDAY.date||TODAY; DAYS[key]=CDAY; LS.s('days',DAYS); } }
 function saveVanStock(){ LS.s('van_stock', VAN_STOCK); }
 function vanFind(id){ return VAN_STOCK.find(p=>p.id===id); }
-function vanFindByName(name){ return VAN_STOCK.find(p=>p.name===name); }
 
 // ══════════════════════════════════════════════════════════════════
 // HELPERS
@@ -1097,7 +1069,7 @@ function saveSyncQueue(){ LS.s('sync_queue', SYNC_QUEUE); }
 
 // أنواع مرتبطة بمخزون العربية: لازم تتزامن بالترتيب ووقف عند أول فشل
 // (زي OFFLINE_STRICT_ORDER_KINDS فى سلطان ERP نفسها)
-const SYNC_STRICT_ORDER_KINDS = ['sale'];
+const SYNC_STRICT_ORDER_KINDS = ['sale','warehouse_return','customer_return'];
 
 function queueSync(kind, payload){
   const entry = { id: uid(), kind, payload, status:'pending', attempts:0, error:null, createdAt: Date.now() };
@@ -1240,6 +1212,46 @@ const SYNC_HANDLERS = {
     });
     if(error) throw error;
   },
+
+  // مرتجع مخزان — نفس نمط van_stock_loads بالعكس (van_stock_returns/
+  // van_stock_return_items)، الـ trigger فى القاعدة (fn_van_stock_return_item_apply)
+  // هو اللي بيحرّك inventory_stock/van_stock الحقيقيين، مش الكود هنا
+  warehouse_return: async (payload) => {
+    const items = payload.items.filter(it => isRealSultanId(it.productId));
+    if(!items.length) throw new Error('لا يوجد أصناف حقيقية متزامنة فى المرتجع ده');
+    const { data: mainWh } = await sb.from('warehouses').select('id').eq('is_main', true).limit(1).maybeSingle();
+    if(!mainWh?.id) throw new Error('لا يوجد مخزن رئيسي فى سلطان');
+    const { data: ret, error } = await sb.from('van_stock_returns').insert({
+      return_no: payload.invoiceId, warehouse_id: mainWh.id, rep_id: REP.id,
+      return_date: new Date(payload.ts).toISOString().slice(0,10),
+    }).select('id').single();
+    if(error) throw error;
+    const { error: itemsErr } = await sb.from('van_stock_return_items').insert(
+      items.map(it => ({ return_id: ret.id, product_id: it.productId, qty: it.qty }))
+    );
+    if(itemsErr) throw itemsErr;
+  },
+
+  // مرتجع عميل فى الميدان — بيرجع لعربية المندوب نفسه (مش المخزن)، وبيقلل
+  // رصيد العميل لو معروف. RPC مخصوصة (fn_create_rep_customer_return) بدل
+  // fn_create_sales_return العادية، عشان دي بترجّع المخزون لعربية المندوب
+  // مش للمخزن الرئيسي — نفس فرق van_stock عن inventory_stock.
+  customer_return: async (payload) => {
+    const items = payload.items.filter(it => isRealSultanId(it.productId));
+    if(!items.length) throw new Error('لا يوجد أصناف حقيقية متزامنة فى المرتجع ده');
+    const realCustId = payload.custId ? await resolveRealCustomerId(payload.custId, payload.custName, null) : null;
+    const { error } = await sb.rpc('fn_create_rep_customer_return', {
+      p_customer_id: realCustId,
+      p_rep_id: REP.id,
+      p_payment_type: realCustId ? 'credit' : 'cash',
+      p_subtotal: payload.total,
+      p_total: payload.total,
+      p_reason: 'مرتجع عميل من تطبيق سلطانو',
+      p_created_by: REP.id,
+      p_items: items.map(it => ({ product_id: it.productId, qty: it.qty, unit_price: it.unit, line_total: it.qty*it.unit, unit_name: it.unitName||null })),
+    });
+    if(error) throw error;
+  },
 };
 
 let _syncingQueue = false;
@@ -1248,7 +1260,13 @@ async function trySyncQueue(){
   _syncingQueue = true;
   try{
     const pending = SYNC_QUEUE.filter(e => e.status==='pending').sort((a,b)=>a.createdAt-b.createdAt);
+    // نوع حرج فشل؟ نوقف بس العناصر التالية من نفس النوع ده (عشان الترتيب يفضل
+    // صحيح — مثلاً بيع فشل لازم اللي بعده من نفس النوع يستنى)، مش كل الطابور —
+    // وإلا فاتورة واحدة عالقة (صنف قديم مش متزامن مثلاً) بتوقف كل التحصيل
+    // والمصروفات اللي بعدها فى الطابور معاها بالغلط.
+    const blockedKinds = new Set();
     for(const entry of pending){
+      if(blockedKinds.has(entry.kind)) continue;
       const handler = SYNC_HANDLERS[entry.kind];
       if(!handler) continue;
       try{
@@ -1259,7 +1277,7 @@ async function trySyncQueue(){
         entry.attempts = (entry.attempts||0)+1;
         entry.error = err.message || String(err);
         saveSyncQueue();
-        if(SYNC_STRICT_ORDER_KINDS.includes(entry.kind)) break; // رتيب حرج، مانكملش لللي بعده
+        if(SYNC_STRICT_ORDER_KINDS.includes(entry.kind)) blockedKinds.add(entry.kind);
       }
     }
     if(!SYNC_QUEUE.some(e=>e.kind==='sale')) syncVanStockFromSultan();
@@ -1431,6 +1449,7 @@ function launchApp(){
     // كل ده فى الخلفية، من غير ما يوقف فتح التطبيق
     syncCustomersFromSultan();
     syncVanStockFromSultan();
+    syncWarehouseFromSultan();
     trySyncQueue();
     updateSyncBadge();
   }
@@ -1542,8 +1561,12 @@ const noop=()=>{};
 // ══════════════════════════════════════════════════════════════════
 // ── START DAY ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════
-function showStartDay(){
-  // Build the modal HTML first — product rows built separately via DOM to avoid text injection
+// مخزون العربية بيتزامن تلقائي من van_stock الحقيقي فى سلطان (تحميل
+// العربية بيتم من هناك بس — 🚗 مندوب سلطان → تحميل عربية)، فمفيش داعي
+// المندوب يكتب كميات يدوي هنا زي زمان — بدء اليوم بقى بس عهدة + فتح شيفت.
+async function showStartDay(){
+  if(REP && navigator.onLine) await syncVanStockFromSultan(); // نتأكد إن العدد المعروض أحدث حاجة
+  const readyCount = VAN_STOCK.filter(p=>p.qty>0).length;
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div style="font-size:18px;font-weight:900;color:var(--g)">🌅 بدء يوم جديد</div>
@@ -1555,72 +1578,23 @@ function showStartDay(){
       <input type="number" id="sd-cash" class="ifield" placeholder="مثال: 300" value="0">
     </div>
     <div class="sec" style="margin-bottom:14px">
-      <div class="st">📦 تحميلة البضاعة</div>
-      <div id="sd-prods"></div>
+      <div class="st">📦 مخزون العربية</div>
+      ${readyCount?`<div class="al al-teal">✅ عندك ${readyCount} صنف جاهز فى العربية (متزامن من سلطان)</div>`:
+        `<div class="al al-r">⚠️ مفيش مخزون محمّل بعد — الأدمن لازم يحمّل عربيتك من سلطان ERP أولاً (🚗 مندوب سلطان → تحميل عربية)</div>`}
     </div>
     <button class="btn btn-g btn-xl" onclick="confirmStartDay()">بدء اليوم ✅</button>`);
-
-  // Build product rows using DOM — safe, no text injection
-  const container = document.getElementById('sd-prods');
-  if(!container) return;
-
-  if(!WAREHOUSE.length){
-    const msg = document.createElement('div');
-    msg.style.cssText = 'color:var(--t3);text-align:center;padding:14px;font-size:13px';
-    msg.textContent = 'حمّل المخزان أولاً من المزيد ⚙️';
-    container.appendChild(msg);
-    return;
-  }
-
-  WAREHOUSE.forEach(w => {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bdr)';
-
-    const emoji = document.createElement('span');
-    emoji.style.fontSize = '22px';
-    emoji.textContent = w.emoji || '📦';   // textContent = safe, no XSS
-
-    const name = document.createElement('span');
-    name.style.cssText = 'flex:1;font-size:14px;font-weight:700';
-    name.textContent = w.name;              // textContent = never rendered as HTML
-
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.id = 'ld-' + w.id;
-    input.className = 'ifield';
-    input.style.cssText = 'width:80px;text-align:center';
-    input.placeholder = '0';
-    input.min = '0';
-
-    row.appendChild(emoji);
-    row.appendChild(name);
-    row.appendChild(input);
-    container.appendChild(row);
-  });
 }
 
 function confirmStartDay(){
   autoBackup();
   const startCash = parseFloat(document.getElementById('sd-cash')?.value)||0;
-  const loaded = [];
-  WAREHOUSE.forEach(w=>{
-    const el = document.getElementById('ld-'+w.id);
-    const qty = parseInt(el?.value)||0;
-    if(qty>0) loaded.push({...w, qty, origQty:qty});
-  });
-  // Merge loaded items into permanent VAN_STOCK
-  loaded.forEach(newP=>{
-    const ex = vanFindByName(newP.name);
-    if(ex){ ex.qty+=newP.qty; ex.origQty=(ex.origQty||0)+newP.qty; }
-    else VAN_STOCK.push({...newP});
-  });
-  saveVanStock();
+  const readyCount = VAN_STOCK.filter(p=>p.qty>0).length;
   if(CDAY){
     // New shift — just add cash and log
     CDAY.status='open';
     CDAY.startCash=(CDAY.startCash||0)+startCash;
     CDAY.shifts=CDAY.shifts||[];
-    CDAY.shifts.push({openedAt:Date.now(),startCash,prodsCount:loaded.length});
+    CDAY.shifts.push({openedAt:Date.now(),startCash,prodsCount:readyCount});
   } else {
     CDAY=newDayRecord(TODAY);
     CDAY.startCash=startCash;
@@ -1628,7 +1602,7 @@ function confirmStartDay(){
   }
   saveDay();
   updateDayBadge();
-  tgStartDay(startCash,loaded.length);
+  tgStartDay(startCash,readyCount);
   closeModal();
   toast('✅ تم بدء الشيفت — '+dayName(TODAY));
   r_van();
@@ -1825,7 +1799,7 @@ function r_sell(){
     <div class="st">🛒 أصناف اليوم (${prods.length})
       <span style="display:flex;gap:8px">
         <span class="st-a" onclick="requireAdmin('إدارة أصناف اليوم',clearDayProducts)">تعديل/حذف 🔐</span>
-        <span class="st-a" onclick="go('more',document.querySelectorAll('.nb')[6])">⚙️ إعدادات</span>
+        <span class="st-a" onclick="go('more',document.querySelectorAll('.nb')[9])">⚙️ إعدادات</span>
       </span>
     </div>
     ${warnHtml}${zeroHtml}
@@ -2529,44 +2503,6 @@ function doExpense(){
   saveDay(); toast(`✅ مصروف ${cat}: ${fmt(amt)} ج`); r_ledger();
   if(REP) queueSync('expense', {cat, note, amt, ts:expTs});
 }
-function onOldDebtCustChange(){
-  const v=document.getElementById('old-debt-cust')?.value;
-  document.getElementById('old-debt-new-row').style.display=v==='_new'?'block':'none';
-}
-
-function addOldDebtFromLedger(){
-  const custSel=document.getElementById('old-debt-cust')?.value;
-  const newName=document.getElementById('old-debt-new-name')?.value.trim();
-  const amt=parseFloat(document.getElementById('ledger-old-debt-amt')?.value)||0;
-  if(!custSel){toast('اختر العميل','err');return;}
-  if(amt<=0){toast('أدخل المبلغ','err');return;}
-  // Debt lock check — always requires admin (sensitive operation)
-
-  let custId='', custName='';
-  if(custSel==='_new'){
-    if(!newName){toast('اكتب اسم العميل','err');return;}
-    const nc={id:uid(),name:newName,debt:0};
-    CUSTOMERS.push(nc); custId=nc.id; custName=newName;
-    // Also add as store entry
-    STORES.push({id:nc.id,name:newName,phone:'',address:'',note:'',visits:[],oldDebt:amt});
-    LS.s('stores',STORES);
-  } else {
-    const c=CUSTOMERS.find(x=>x.id===custSel);
-    custId=custSel; custName=c?.name||'';
-    // Add old debt to store record
-    const store=STORES.find(s=>s.id===custSel);
-    if(store){ store.oldDebt=(store.oldDebt||0)+amt; LS.s('stores',STORES); }
-    else {
-      STORES.push({id:custSel,name:custName,phone:'',address:'',note:'',visits:[],oldDebt:amt});
-      LS.s('stores',STORES);
-    }
-  }
-  LS.s('customers',CUSTOMERS);
-  auditLog('تسجيل دين قديم',`${custName} — ${fmt(amt)} ج`);
-  toast(`✅ تم تسجيل دين ${custName}: ${fmt(amt)} ج`);
-  showOldDebtsPage();
-}
-
 
 // ══════════════════════════════════════════════════════════════════
 // INVOICE PRINT + WHATSAPP SEND
@@ -2589,17 +2525,18 @@ function buildInvoiceText(invoiceId, custName, lines, total, isDebt, date){
 }
 
 function showInvoiceActions(invoiceId){
-  const inv={lines:[], custName:'', total:0, debt:false, ts:0};
+  const inv={lines:[], custName:'', custId:'', total:0, debt:false, ts:0};
   (CDAY?.sales||[]).filter(s=>s.invoiceId===invoiceId&&!s.void&&s.total>0).forEach(s=>{
     inv.lines.push({emoji:s.emoji,name:s.name,qty:s.qty,total:s.total});
     inv.total+=s.total;
     inv.custName=s.custName||'';
+    inv.custId=s.custId||'';
     inv.debt=s.debt;
     inv.ts=s.ts;
   });
   if(!inv.lines.length){toast('لا توجد بنود','err');return;}
-  const cust=CUSTOMERS.find(c=>c.name===inv.custName);
-  const phone=cust?.phone||STORES.find(s=>s.name===inv.custName)?.phone||'';
+  const cust=CUSTOMERS.find(c=>c.id===inv.custId);
+  const phone=cust?.phone||STORES.find(s=>s.id===inv.custId)?.phone||'';
   const txt=buildInvoiceText(invoiceId,inv.custName,inv.lines,inv.total,inv.debt,TODAY);
 
   openModal(`
@@ -2765,7 +2702,7 @@ function showCustStatement(custId){
 
   const salesRows=allSales.sort((a,b)=>b.ts-a.ts).slice(0,20).map(s=>`
     <div class="row">
-      <span class="rl" style="font-size:13px">${s.emoji||'📦'} ${s.name} ×${s.qty} — ${s.date}</span>
+      <span class="rl" style="font-size:13px">${s.emoji||'📦'} ${s.name} ×${s.qty} — ${new Date(s.ts).toLocaleDateString('ar-EG')}</span>
       <span class="rv cg" style="font-size:13px">${fmt(s.total)} ج</span>
     </div>`).join('');
 
@@ -2795,10 +2732,9 @@ function showCustStatement(custId){
     </div>
     ${collectRows?`<div class="sec"><div class="st">التحصيلات</div>${collectRows}</div>`:''}
     <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-teal btn-xl" style="flex:1" onclick="closeModal();document.querySelectorAll('.nb')[7].click()">💰 تسجيل تحصيل</button>
+      <button class="btn btn-teal btn-xl" style="flex:1" onclick="closeModal();document.querySelectorAll('.nb')[1].click()">💰 تسجيل تحصيل</button>
       <button class="btn btn-b btn-xl" style="flex:1" onclick="editCustomer('${custId}')">✏️ تعديل بيانات</button>
-    </div>
-    <button class="btn btn-o btn-xl" style="margin-top:8px;width:100%" onclick="settleBalance('${custId}')">⚖️ تسوية الرصيد</button>`);
+    </div>`);
 }
 
 function editCustomer(custId){
@@ -2813,7 +2749,7 @@ function editCustomer(custId){
     <div class="ig"><div class="il">الاسم</div><input type="text" id="ec-name" class="ifield" value="${cust.name}"></div>
     <div class="ig"><div class="il">الهاتف</div><input type="tel" id="ec-phone" class="ifield" value="${cust.phone||''}"></div>
     <div class="ig"><div class="il">العنوان</div><input type="text" id="ec-addr" class="ifield" value="${store.address||''}"></div>
-    <div class="ig"><div class="il">الرصيد الافتتاحي (ج)</div><input type="number" id="ec-olddebt" class="ifield" value="${store.oldDebt||0}" placeholder="0"></div>
+    ${(store.oldDebt||0)>0?`<div style="font-size:12.5px;color:var(--t3);margin-bottom:10px">💰 رصيد افتتاحي: ${fmt(store.oldDebt)} ج — بيتزامن من رصيد العميل فى سلطان ERP، مش بيتعدّل من هنا</div>`:''}
     <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="saveCustomerEdit('${custId}')">✅ حفظ التعديلات</button>
     <div class="sec" style="margin-top:14px">
       <div class="st">🔒 إعدادات الآجل</div>
@@ -2831,14 +2767,13 @@ function saveCustomerEdit(custId){
   const name=document.getElementById('ec-name')?.value.trim();
   const phone=document.getElementById('ec-phone')?.value.trim();
   const addr=document.getElementById('ec-addr')?.value.trim();
-  const oldDebt=parseFloat(document.getElementById('ec-olddebt')?.value)||0;
   if(!name){toast('أدخل اسم العميل','err');return;}
   cust.name=name; cust.phone=phone;
   LS.s('customers',CUSTOMERS);
   let store=STORES.find(s=>s.id===custId);
-  if(store){ store.name=name; store.address=addr; store.oldDebt=oldDebt; }
-  else if(addr||oldDebt>0){
-    STORES.push({id:custId,name,address:addr,oldDebt,visits:[]});
+  if(store){ store.name=name; store.address=addr; }
+  else if(addr){
+    STORES.push({id:custId,name,address:addr,oldDebt:0,visits:[]});
   }
   LS.s('stores',STORES);
   auditLog('EditCustomer','تعديل بيانات العميل '+name);
@@ -2860,42 +2795,6 @@ function saveCustomerEdit(custId){
   r_customers();
 }
 
-function settleBalance(custId){
-  const cust=CUSTOMERS.find(c=>c.id===custId);
-  if(!cust) return;
-  const store=STORES.find(s=>s.id===custId)||{};
-  const currentDebt=(cust.debt||0)+(store.oldDebt||0);
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">⚖️ تسوية رصيد — ${cust.name}</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-o" style="margin-bottom:12px">الرصيد الحالي: <strong>${fmt(currentDebt)} ج</strong></div>
-    <div class="ig"><div class="il">الرصيد الجديد (ج)</div><input type="number" id="settle-amt" class="ifield" value="${currentDebt}" placeholder="0"></div>
-    <div class="ig"><div class="il">سبب التسوية</div><input type="text" id="settle-reason" class="ifield" placeholder="مثال: خصم — تسوية نهاية شهر"></div>
-    <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="confirmSettle('${custId}')">✅ تأكيد التسوية</button>`);
-}
-
-function confirmSettle(custId){
-  requireAdmin('تسوية رصيد عميل',()=>{
-    const cust=CUSTOMERS.find(c=>c.id===custId);
-    if(!cust) return;
-    const newBalance=parseFloat(document.getElementById('settle-amt')?.value)||0;
-    const reason=document.getElementById('settle-reason')?.value.trim()||'تسوية يدوية';
-    const store=STORES.find(s=>s.id===custId)||{};
-    const oldTotal=(cust.debt||0)+(store.oldDebt||0);
-    cust.debt=0; LS.s('customers',CUSTOMERS);
-    if(store.id){ store.oldDebt=newBalance; LS.s('stores',STORES); }
-    else if(newBalance>0){
-      STORES.push({id:custId,name:cust.name,oldDebt:newBalance,address:'',visits:[]});
-      LS.s('stores',STORES);
-    }
-    auditLog('SettleBalance',`تسوية رصيد ${cust.name}: من ${fmt(oldTotal)} إلى ${fmt(newBalance)} — ${reason}`);
-    toast('✅ تمت تسوية الرصيد');
-    closeModal();
-    r_customers();
-  });
-}
 
 // ══════════════════════════════════════════════════════════════════
 // ── RETURNS: Customer Return + Warehouse Return (separated)
@@ -2953,9 +2852,6 @@ function confirmWarehouseReturn(){
     p.qty-=qty;
     returned+=qty;
     items.push({prodId:p.id,name:p.name,emoji:p.emoji||'📦',qty,unit});
-    // Add back to WAREHOUSE
-    const wItem=WAREHOUSE.find(w=>w.id===p.id||w.name===p.name);
-    if(wItem){ /* warehouse qty not tracked numerically — just log */ }
     auditLog('مرتجع مخزان',`${p.name} × ${qty}`);
   });
   if(!returned){toast('لم تختر أي كمية للمرتجع','err');return;}
@@ -2964,6 +2860,14 @@ function confirmWarehouseReturn(){
   saveVanStock();
   GOAL.achieved=calcAchieved(); LS.s('goal',GOAL);
   saveDay(); closeModal();
+  // ★ مزامنة حقيقية مع سلطان ERP — بترجّع الكمية دي فعليًا للمخزن الرئيسي
+  // (van_stock_returns → fn_van_stock_return_item_apply)، زي ما البيع
+  // بيتزامن بالظبط، عشان مخزون العربية عند سلطان يفضل مطابق للواقع
+  if(REP){
+    queueSync('warehouse_return', {
+      invoiceId, items: items.map(it=>({productId:it.prodId, qty:it.qty})), ts:Date.now(),
+    });
+  }
   toast(`↩️ تم مرتجع المخزان`);
   r_ledger();
 }
@@ -3056,6 +2960,15 @@ function confirmCustomerReturn(fullReturn){
   auditLog('مرتجع عميل',`${cust?.name||'عابر'} — ${fmt(totalReturn)} ج — ${lines.length} صنف`);
   tgReturnMulti(lines, cust?.name||'');
   saveDay(); closeModal();
+  // ★ مزامنة حقيقية مع سلطان — بيرجّع الكمية دي فعليًا لعربية المندوب
+  // وبيقلل رصيد العميل الحقيقي لو كان معروف
+  if(REP){
+    queueSync('customer_return', {
+      custId: custId||null, custName: cust?.name||'',
+      items: lines.map(l=>({productId:l.prodId, qty:l.qty, unit:l.unit, unitName:null})),
+      total: totalReturn, ts: Date.now(),
+    });
+  }
   toast(`↩️ مرتجع عميل: ${fmt(totalReturn)} ج`);
   r_ledger();
 }
@@ -3188,8 +3101,7 @@ function storeCardHtml(s, i, opts){
     ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
     <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
     <div style="display:flex;gap:6px">
-      <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustHistory('${s.id}')">كشف حساب</button>
-      <button class="btn btn-o" style="flex:1;font-size:12px" onclick="showAddOldDebt('${s.id}','${s.name}')">دين قديم</button>
+      <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustStatement('${s.id}')">كشف حساب</button>
       ${opts.removeFromRouteDay!=null?`<button class="btn btn-r" style="font-size:12px;padding:9px 9px" onclick="removeFromRouteDay('${s.id}',${opts.removeFromRouteDay})">➖ شيل</button>`:`<button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>`}
     </div>
   </div>`;
@@ -3364,66 +3276,6 @@ function removeFromRouteDay(storeId, wd){
   toast('➖ اتشال من خط السير');
   r_route();
 }
-
-// ── إضافة دين قديم ────────────────────────────────────────────────
-function showAddOldDebt(storeId, storeName){
-  const store=STORES.find(s=>s.id===storeId);
-  const cust=CUSTOMERS.find(c=>c.id===storeId);
-  const currentOldDebt=store?.oldDebt||0;
-  const currentNewDebt=cust?.debt||0;
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900;color:var(--orange)">💰 دين قديم</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-o" style="margin-bottom:14px">
-      <strong>${storeName}</strong><br>
-      دين قديم حالي: ${fmt(currentOldDebt)} ج<br>
-      دين جديد (من التطبيق): ${fmt(currentNewDebt)} ج<br>
-      الإجمالي: ${fmt(currentOldDebt+currentNewDebt)} ج
-    </div>
-    <div class="ig"><div class="il">الدين القديم المطلوب (ج)</div>
-      <input type="number" id="old-debt-amt" class="ifield" value="${currentOldDebt||''}" placeholder="مثال: 500">
-    </div>
-    <div class="ig" style="margin-bottom:14px"><div class="il">ملاحظة</div>
-      <input type="text" id="old-debt-note" class="ifield" placeholder="مثال: دين من قبل التطبيق">
-    </div>
-    <button class="btn btn-o btn-xl" onclick="saveOldDebt('${storeId}')">حفظ الدين القديم</button>`);
-}
-
-function saveOldDebt(storeId){
-  const amt=parseFloat(document.getElementById('old-debt-amt')?.value)||0;
-  const note=document.getElementById('old-debt-note')?.value.trim()||'دين قديم';
-  const store=STORES.find(s=>s.id===storeId);
-  if(!store){toast('محل غير موجود','err');return;}
-  store.oldDebt=amt;
-  LS.s('stores',STORES);
-  auditLog('تسجيل دين قديم',`${store.name} — ${fmt(amt)} ج`);
-  toast(`✅ تم تسجيل دين ${store.name}: ${fmt(amt)} ج`);
-  closeModal(); r_stores();
-}
-
-function showCustHistory(storeId){
-  const store=STORES.find(s=>s.id===storeId);
-  const allSales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===storeId&&!s.void);
-  const allCollect=Object.values(DAYS).flatMap(d=>d.collections||[]).filter(c=>c.custId===storeId);
-  const cust=CUSTOMERS.find(c=>c.id===storeId);
-  const debt=cust?.debt||0;
-  const totalSales=allSales.reduce((a,s)=>a+(s.total>0?s.total:0),0);
-  const totalCollect=allCollect.reduce((a,c)=>a+c.amt,0);
-  const rows=allSales.map(s=>`<div class="row"><span class="rl">${s.emoji||'📦'} ${s.name}×${s.qty}</span><span class="rv cg">${fmt(s.total)} ج</span></div>`).join('');
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">${store?.name||'المحل'}</div><span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="g3" style="margin-bottom:12px">
-      <div class="kcard"><div class="kc-val cg">${fmt(totalSales)}</div><div class="kc-lbl">مبيعات ج</div></div>
-      <div class="kcard"><div class="kc-val ct">${fmt(totalCollect)}</div><div class="kc-lbl">تحصيل ج</div></div>
-      <div class="kcard"><div class="kc-val ${debt>0?'cr':'cg'}">${fmt(debt)}</div><div class="kc-lbl">رصيد ج</div></div>
-    </div>
-    <div class="sec"><div class="st">المشتريات</div>${rows||'<div style="color:var(--t3);text-align:center;padding:10px">لا مشتريات</div>'}</div>`);
-}
-
 // ══════════════════════════════════════════════════════════════════
 // ── OFFERS PAGE ───────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════
@@ -3575,7 +3427,7 @@ function r_orders(){
   document.getElementById('pg-orders').innerHTML=`
   ${cartBar}
   <div class="sec">
-    <div class="st">📦 المخزان (${allProds.length}) <span class="st-a" onclick="adminUploadWH()">تحميل Excel 🔐</span></div>
+    <div class="st">📦 المخزان (${allProds.length}) <span class="st-a" onclick="resyncWarehouse()">🔄 مزامنة من سلطان</span></div>
     <input class="sbox" placeholder="🔍 ابحث..." oninput="filterOP(this.value)" id="op-search">
     <div id="op-list">${pList}</div>
   </div>
@@ -3651,19 +3503,10 @@ function r_more(){
   const days=Object.keys(DAYS).sort().reverse();
   document.getElementById('pg-more').innerHTML=`
   <div class="sec">
-    <div class="st">📦 المخزان الكامل</div>
-    <div class="upload-zone" onclick="adminUploadWH()">
-      <div style="font-size:36px;margin-bottom:8px">📊</div>
-      <div style="font-size:14px;font-weight:700;color:var(--t2)">رفع ملف المخزان 🔐</div>
-      <div style="font-size:12px;color:var(--t3);margin-top:4px">اضغط هنا لرفع Excel أو CSV</div>
-    </div>
-    <button class="btn btn-blue btn-lg" style="margin-top:8px" onclick="adminUploadInvoice()">📦 تحميل فاتورة يومية 🔐</button>
-    <button class="btn btn-b btn-lg" style="margin-top:8px;font-size:13px" onclick="downloadWHTemplate()">⬇️ نموذج CSV مخزان</button>
-    ${VAN_STOCK.length?`<div class="al al-teal" style="margin-top:8px">✅ مخزون السيارة: ${VAN_STOCK.length} صنف — ${VAN_STOCK.filter(p=>p.qty>0).length} متاح</div>`:'<div class="al al-o" style="margin-top:8px">⚠️ مخزون السيارة فارغ</div>'}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-      <button class="btn btn-r btn-lg" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
-      <button class="btn btn-r btn-lg" onclick="requireAdmin('مسح المخزان الكامل',clearWarehouse)">🗑️ مسح المخزان 🔐</button>
-    </div>
+    <div class="st">📦 مخزون السيارة</div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — التحميل والتحكم بيتم من هناك (🚗 مندوب سلطان → تحميل عربية)</div>
+    ${VAN_STOCK.length?`<div class="al al-teal">✅ مخزون السيارة: ${VAN_STOCK.length} صنف — ${VAN_STOCK.filter(p=>p.qty>0).length} متاح</div>`:'<div class="al al-o">⚠️ مخزون السيارة فارغ — لسه محدش حمّل عربيتك من سلطان</div>'}
+    <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   </div>
   <div class="sec">
     <div class="st">⚙️ الإعدادات</div>
@@ -3792,46 +3635,6 @@ function confirmClearAllDayProducts(){
   r_sell();
 }
 
-// ── مسح المخزان الكامل ───────────────────────────────────────────
-function clearWarehouse(){
-  const rows = WAREHOUSE.map((w,i)=>`
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--bdr)">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:20px">${w.emoji||'📦'}</span>
-        <div style="font-size:14px;font-weight:700">${w.name}</div>
-      </div>
-      <button class="btn btn-r" style="font-size:12px;padding:7px 12px" onclick="deleteWarehouseItem(${i})">حذف</button>
-    </div>`).join('') || '<div style="color:var(--t3);text-align:center;padding:14px">المخزان فاضي</div>';
-
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900;color:var(--red)">🗑️ إدارة المخزان</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-r" style="margin-bottom:12px">المخزان هو قائمة الأصناف الدائمة — لا يؤثر على مبيعات اليوم</div>
-    <div style="max-height:320px;overflow-y:auto;margin-bottom:14px">${rows}</div>
-    <button class="btn btn-r btn-xl" onclick="confirmClearWarehouse()">🗑️ مسح المخزان كله</button>`);
-}
-
-function deleteWarehouseItem(idx){
-  const item = WAREHOUSE[idx];
-  if(!item) return;
-  WAREHOUSE.splice(idx,1);
-  LS.s('warehouse',WAREHOUSE);
-  auditLog('حذف صنف من المخزان', item.name);
-  toast('🗑️ تم حذف '+item.name+' من المخزان');
-  closeModal();
-  r_more();
-}
-
-function confirmClearWarehouse(){
-  WAREHOUSE = [];
-  LS.s('warehouse',WAREHOUSE);
-  auditLog('مسح المخزان كله','—');
-  toast('🗑️ تم مسح المخزان');
-  closeModal();
-  r_more();
-}
 function showAdminCfg(){
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -4092,297 +3895,27 @@ function onBakFile(input){
   }catch(ex){ toast('خطأ: '+ex.message,'err'); try{input.value='';}catch(e){} }
 }
 
-// ═══ WAREHOUSE UPLOAD ════════════════════════════════════════════
-function adminUploadWH(){
-  requireAdmin('تحميل ملف المخزان', ()=>{
-    openModal(`
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-size:17px;font-weight:900">📦 تحميل المخزان</div>
-        <span onclick="closeModal()" style="font-size:26px;cursor:pointer;color:var(--t2)">✕</span>
-      </div>
-      <div class="al al-gold" style="margin-bottom:10px">⭐ الأفضل: Backup JSON — يعمل على كل الأجهزة بدون مشاكل</div>
-      <div class="al al-teal" style="margin-bottom:12px">أو حمّل CSV / Excel (حسب دعم جهازك)</div>
-      <label style="display:block;border:2px dashed var(--teal);border-radius:14px;padding:22px;text-align:center;cursor:pointer;background:rgba(0,212,170,.04);margin-bottom:10px">
-        <input type="file" accept=".csv,.xlsx,.xls,.json" style="display:none" onchange="onWhFileAny(this)">
-        <div style="font-size:34px;margin-bottom:8px">📂</div>
-        <div style="font-size:15px;font-weight:900;color:var(--teal)">اختر الملف</div>
-        <div style="font-size:12px;color:var(--t3);margin-top:5px">JSON باكاب / CSV / Excel</div>
-      </label>
-      <button class="btn btn-b btn-lg" onclick="downloadWHTemplate()">⬇️ نموذج CSV فارغ</button>`);
-  });
-}
-
-function onWhFileAny(input){
+// ═══ كتالوج المخزان (WAREHOUSE) ══════════════════════════════════
+// كان ده قبل كده رفع يدوي (Excel/CSV/JSON) بيعمل أصناف بـ id وهمي —
+// وده كان بيكسر مزامنة أي بيعة عليه لأن الصنف مش موجود فعلاً فى سلطان
+// (fn_create_sale بيرفض id مش UUID حقيقي)، وده كان بيوقف كل الطابور
+// اللي وراه (تحصيل/مصروفات) بسبب ترتيب الأنواع الحرجة. دلوقتي المخزان
+// بيتزامن تلقائي من جدول products الحقيقي فى سلطان — مفيش تحكم محلي
+// خالص، كل التحكم من سلطان ERP زي باقي الإعدادات.
+async function syncWarehouseFromSultan(){
+  if(!navigator.onLine) return;
   try{
-    const file=input.files&&input.files[0];
-    if(!file){ input.value=''; return; }
-    const nm=file.name.toLowerCase();
-
-    if(nm.endsWith('.json')){
-      // Extract warehouse from JSON backup
-      safeReadFile(file,'text',
-        text=>{
-          try{
-            const d=JSON.parse(text);
-            if(d.WAREHOUSE&&Array.isArray(d.WAREHOUSE)){
-              WAREHOUSE=d.WAREHOUSE; LS.s('warehouse',WAREHOUSE);
-              closeModal(); toast('✅ استيراد '+WAREHOUSE.length+' صنف من الباكاب');
-              r_more();
-            } else { toast('الملف لا يحتوي على مخزان','err'); }
-          }catch(ex){ toast('ملف JSON غير صحيح','err'); }
-          input.value='';
-        },
-        err=>{ toast(err,'err'); input.value=''; }
-      );
-
-    } else if(nm.endsWith('.csv')){
-      safeReadFile(file,'text',
-        text=>{ processWH(parseCSVRaw(text)); closeModal(); input.value=''; },
-        err=>{ toast(err,'err'); input.value=''; }
-      );
-
-    } else if(nm.endsWith('.xlsx')||nm.endsWith('.xls')){
-      const doXLSX=()=>{
-        if(!window.XLSX){ toast('Excel غير مدعوم على هذا الجهاز — استخدم CSV أو JSON','warn'); input.value=''; return; }
-        safeReadFile(file,'arraybuffer',
-          buf=>{
-            try{
-              const wb=XLSX.read(new Uint8Array(buf),{type:'array'});
-              processWH(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''}));
-              closeModal();
-            }catch(ex){ toast('فشل قراءة Excel: '+ex.message,'err'); }
-            input.value='';
-          },
-          err=>{ toast(err,'err'); input.value=''; }
-        );
-      };
-      if(window.XLSX){ doXLSX(); }
-      else{
-        toast('جاري تحميل مكتبة Excel...','warn');
-        const sc=document.createElement('script');
-        sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-        sc.onload=doXLSX;
-        sc.onerror=()=>{ toast('Excel غير مدعوم — استخدم CSV أو JSON','err'); input.value=''; };
-        document.head.appendChild(sc);
-      }
-    } else {
-      toast('نوع الملف غير مدعوم — استخدم JSON أو CSV','err');
-      input.value='';
-    }
-  }catch(ex){ toast('خطأ: '+ex.message,'err'); try{input.value='';}catch(e){} }
+    const { data, error } = await sb.from('products').select('id,name,retail_price,wholesale_price').eq('is_active', true);
+    if(error) return;
+    WAREHOUSE = (data||[]).map(p=>({ id:p.id, name:p.name, emoji:'📦', price:Number(p.retail_price)||Number(p.wholesale_price)||0 }));
+    LS.s('warehouse', WAREHOUSE);
+  }catch(e){}
 }
-
-function parseCSVRaw(text){
-  try{ return text.trim().split('\n').map(l=>l.split(',').map(c=>c.trim().replace(/^"|"$/g,''))); }
-  catch(ex){ return []; }
-}
-
-function processWH(rows){
-  try{
-    if(!rows||rows.length<2){ toast('الملف فاضي','err'); return; }
-    const h=rows[0].map(x=>(x||'').toString().toLowerCase());
-    const ci={
-      name: h.findIndex(x=>x.includes('صنف')||x.includes('name')||x.includes('اسم')),
-      price:h.findIndex(x=>x.includes('سعر')||x.includes('price')),
-      emoji:h.findIndex(x=>x.includes('emoji')||x.includes('ايموجي')),
-    };
-    if(ci.name<0){ toast('لازم عمود اسم الصنف','err'); return; }
-    const np=[];
-    for(let i=1;i<rows.length;i++){
-      const row=rows[i];
-      const name=(row[ci.name]||'').toString().trim();
-      const price=ci.price>=0?parseFloat(row[ci.price])||0:0;
-      const emoji=ci.emoji>=0?(row[ci.emoji]||'📦').toString().trim():'📦';
-      if(name) np.push({id:uid(),name,emoji,price});
-    }
-    if(!np.length){ toast('لا بيانات في الملف','err'); return; }
-    WAREHOUSE=np; LS.s('warehouse',WAREHOUSE);
-    toast('✅ تم تحميل '+np.length+' صنف في المخزان');
-    r_more();
-  }catch(ex){ toast('خطأ في معالجة المخزان: '+ex.message,'err'); }
-}
-
-function downloadWHTemplate(){
-  const csv='\uFEFFالصنف,السعر,الإيموجي\nشيبسي كبير,8,🥔\nمياه 1.5,5,💧\nعصير,6,🧃\n';
-  const a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download='نموذج_مخزان.csv'; a.click();
-}
-
-// ═══ INVOICE UPLOAD ══════════════════════════════════════════════
-function adminUploadInvoice(){
-  requireAdmin('تحميل فاتورة التحميل', ()=>{
-    openModal(`
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-size:17px;font-weight:900">📦 فاتورة التحميل اليومية</div>
-        <span onclick="closeModal()" style="font-size:26px;cursor:pointer;color:var(--t2)">✕</span>
-      </div>
-
-      <div class="al al-gold" style="margin-bottom:12px">
-        ⭐ اختار طريقة التحميل المناسبة لجهازك
-      </div>
-
-      <!-- طريقة 1: ملف -->
-      <div style="background:var(--bg3);border-radius:12px;padding:12px;margin-bottom:10px;border:1px solid var(--bdr)">
-        <div style="font-size:13px;font-weight:900;color:var(--blue);margin-bottom:8px">📁 طريقة 1 — ملف CSV أو Excel</div>
-        <label style="display:block;border:2px dashed var(--blue);border-radius:11px;padding:16px;text-align:center;cursor:pointer;background:rgba(61,184,255,.04)">
-          <input type="file" accept=".csv,.xlsx,.xls" style="display:none" onchange="onInvoiceFile(this)">
-          <div style="font-size:28px;margin-bottom:6px">📊</div>
-          <div style="font-size:14px;font-weight:700;color:var(--blue)">اختر CSV أو Excel</div>
-          <div style="font-size:11px;color:var(--t3);margin-top:4px">لو Excel مش شغال — استخدم CSV</div>
-        </label>
-      </div>
-
-      <!-- طريقة 2: نص مباشر -->
-      <div style="background:var(--bg3);border-radius:12px;padding:12px;margin-bottom:10px;border:1px solid var(--bdr)">
-        <div style="font-size:13px;font-weight:900;color:var(--teal);margin-bottom:8px">✏️ طريقة 2 — الكتابة المباشرة</div>
-        <div style="font-size:12px;color:var(--t2);margin-bottom:8px">اكتب كل صنف في سطر: <span style="color:var(--gold)">اسم الصنف,الكمية,السعر</span></div>
-        <textarea id="inv-paste" class="ifield" rows="5" placeholder="شيبسي كبير,50,8&#10;مياه 1.5,30,5&#10;عصير دانون,20,6" style="font-family:monospace;font-size:13px;direction:rtl;resize:vertical"></textarea>
-        <button class="btn btn-teal btn-lg" style="margin-top:8px" onclick="processInvoiceText()">✓ تحميل البيانات</button>
-      </div>
-
-      <!-- طريقة 3: إضافة صنف واحد -->
-      <div style="background:var(--bg3);border-radius:12px;padding:12px;border:1px solid var(--bdr)">
-        <div style="font-size:13px;font-weight:900;color:var(--orange);margin-bottom:8px">➕ طريقة 3 — إضافة صنف واحد</div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <input type="text"   id="inv-m-name"  class="ifield" placeholder="اسم الصنف" style="flex:2">
-          <input type="number" id="inv-m-qty"   class="ifield" placeholder="الكمية" style="flex:1">
-          <input type="number" id="inv-m-price" class="ifield" placeholder="السعر" style="flex:1">
-        </div>
-        <button class="btn btn-o btn-lg" onclick="addSingleProduct()">إضافة ➕</button>
-      </div>
-
-      <button class="btn btn-b btn-lg" style="margin-top:10px" onclick="downloadInvTemplate()">⬇️ تحميل نموذج CSV</button>`);
-  });
-}
-
-// Process pasted/typed text
-function processInvoiceText(){
-  const raw = document.getElementById('inv-paste')?.value.trim();
-  if(!raw){ toast('اكتب البيانات أولاً','err'); return; }
-  const lines = raw.split('\n').filter(l=>l.trim());
-  const np = [];
-  lines.forEach(line=>{
-    const parts = line.split(',').map(p=>p.trim());
-    const name  = parts[0];
-    const qty   = parseInt(parts[1])||0;
-    const price = parseFloat(parts[2])||0;
-    if(name&&qty>0) np.push({id:uid(),name,emoji:'📦',price,qty,origQty:qty});
-  });
-  if(!np.length){ toast('لم يتم التعرف على أي بيانات — تأكد من الصيغة: اسم,كمية,سعر','err'); return; }
-  processInvoiceRows(np);
-}
-
-// Add single product manually
-function addSingleProduct(){
-  const name  = document.getElementById('inv-m-name')?.value.trim();
-  const qty   = parseInt(document.getElementById('inv-m-qty')?.value)||0;
-  const price = parseFloat(document.getElementById('inv-m-price')?.value)||0;
-  if(!name){ toast('اكتب اسم الصنف','err'); return; }
-  if(qty<=0){ toast('أدخل الكمية','err'); return; }
-  processInvoiceRows([{id:uid(),name,emoji:'📦',price,qty,origQty:qty}]);
-}
-
-// Shared merge logic for all invoice input methods
-function processInvoiceRows(np){
-  np.forEach(p=>{ if(!WAREHOUSE.find(w=>w.name===p.name)) WAREHOUSE.push({id:p.id,name:p.name,emoji:p.emoji,price:p.price}); });
-  LS.s('warehouse',WAREHOUSE);
-  // Always merge into VAN_STOCK regardless of day status
-  np.forEach(newP=>{
-    const existing=vanFindByName(newP.name);
-    if(existing){
-      existing.qty    +=newP.qty;
-      existing.origQty=(existing.origQty||0)+newP.qty;
-      if(newP.price>0) existing.price=newP.price;
-    } else {
-      VAN_STOCK.push({...newP});
-    }
-  });
-  saveVanStock();
-  if(CDAY&&CDAY.status==='open'){
-    saveDay();
-    toast('✅ تمت الإضافة — مخزون السيارة: '+VAN_STOCK.length+' صنف');
-    closeModal(); r_sell();
-  } else {
-    toast('✅ تم حفظ '+np.length+' صنف في مخزون السيارة');
-    closeModal(); r_more();
-  }
-}
-
-function onInvoiceFile(input){
-  try{
-    const file=input.files&&input.files[0];
-    if(!file){ input.value=''; return; }
-    const nm=file.name.toLowerCase();
-    if(nm.endsWith('.csv')){
-      safeReadFile(file,'text',
-        text=>{
-          const rows=parseCSVRaw(text);
-          const np=parseRowsToProducts(rows);
-          if(np) processInvoiceRows(np);
-          input.value='';
-        },
-        err=>{ toast(err,'err'); input.value=''; }
-      );
-    } else if(nm.endsWith('.xlsx')||nm.endsWith('.xls')){
-      const doXLSX=()=>{
-        if(!window.XLSX){ toast('Excel غير مدعوم على هذا الجهاز ⚠️\nاستخدم طريقة الكتابة المباشرة أو CSV','warn'); input.value=''; return; }
-        safeReadFile(file,'arraybuffer',
-          buf=>{
-            try{
-              const wb=XLSX.read(new Uint8Array(buf),{type:'array'});
-              const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
-              const np=parseRowsToProducts(rows);
-              if(np) processInvoiceRows(np);
-            }catch(ex){ toast('فشل قراءة Excel: '+ex.message,'err'); }
-            input.value='';
-          },
-          err=>{ toast(err,'err'); input.value=''; }
-        );
-      };
-      if(window.XLSX){ doXLSX(); }
-      else{
-        const sc=document.createElement('script');
-        sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-        sc.onload=doXLSX;
-        sc.onerror=()=>{ toast('Excel غير مدعوم — استخدم طريقة الكتابة المباشرة أو CSV','warn'); input.value=''; };
-        document.head.appendChild(sc);
-      }
-    } else { toast('استخدم CSV أو Excel','err'); input.value=''; }
-  }catch(ex){ toast('خطأ: '+ex.message,'err'); try{input.value='';}catch(e){} }
-}
-
-// Parse rows array into product objects (shared by CSV and Excel)
-function parseRowsToProducts(rows){
-  if(!rows||rows.length<2){ toast('الملف فاضي أو تالف','err'); return null; }
-  const h=rows[0].map(x=>(x||'').toString().toLowerCase());
-  const ci={
-    name: h.findIndex(x=>x.includes('صنف')||x.includes('name')||x.includes('اسم')),
-    qty:  h.findIndex(x=>x.includes('كمي')||x.includes('qty')||x.includes('عدد')),
-    price:h.findIndex(x=>x.includes('سعر')||x.includes('price')),
-    emoji:h.findIndex(x=>x.includes('emoji')||x.includes('ايموجي')),
-  };
-  if(ci.name<0){ toast('لازم عمود اسم الصنف','err'); return null; }
-  if(ci.qty<0) { toast('لازم عمود الكمية','err');    return null; }
-  const np=[];
-  for(let i=1;i<rows.length;i++){
-    const row=rows[i];
-    const name=(row[ci.name]||'').toString().trim();
-    const qty=parseInt(row[ci.qty])||0;
-    const price=ci.price>=0?parseFloat(row[ci.price])||0:0;
-    const emoji=ci.emoji>=0?(row[ci.emoji]||'📦').toString().trim():'📦';
-    if(name&&qty>0) np.push({id:uid(),name,emoji,price,qty,origQty:qty});
-  }
-  if(!np.length){ toast('لا بيانات صحيحة في الملف','err'); return null; }
-  return np;
-}
-
-function processInvoiceData(rows){
-  const np = parseRowsToProducts(rows);
-  if(np) processInvoiceRows(np);
-}
-
-function downloadInvTemplate(){
-  const csv='\uFEFFالصنف,الكمية,السعر,الإيموجي\nشيبسي كبير,50,8,🥔\nمياه 1.5,30,5,💧\nعصير دانون,20,6,🧃\n';
-  const a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download='نموذج_فاتورة.csv'; a.click();
+async function resyncWarehouse(){
+  toast('🔄 جاري المزامنة...');
+  await syncWarehouseFromSultan();
+  toast('✅ اتزامن — '+WAREHOUSE.length+' صنف');
+  r_orders();
 }
 
 // ═══ CSV EXPORT ══════════════════════════════════════════════════
@@ -4461,7 +3994,7 @@ function r_van(){
     <!-- Header -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <div>
-        <div style="font-size:17px;font-weight:900;color:var(--tx)">🚗 ملخص السيارة</div>
+        <div style="font-size:17px;font-weight:900;color:var(--text)">🚗 ملخص السيارة</div>
         <div style="font-size:11px;color:var(--t3);margin-top:2px">${TODAY} — ${CDAY?'يوم مفتوح ✅':'لا يوجد يوم مفتوح'}</div>
       </div>
       <button class="btn btn-b" style="font-size:12px;padding:6px 12px" onclick="r_van()">🔄 تحديث</button>
@@ -4503,7 +4036,7 @@ function r_van(){
     <div class="sec" style="margin:0 0 10px 0;padding:16px;border:1px solid var(--bdr)">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <div>
-          <div style="font-size:13px;font-weight:700;color:var(--tx)">📊 نسبة التصريف من السيارة</div>
+          <div style="font-size:13px;font-weight:700;color:var(--text)">📊 نسبة التصريف من السيارة</div>
           <div style="font-size:11px;color:var(--t3);margin-top:2px">(قيمة ما خرج ÷ إجمالي المحمل) × 100</div>
         </div>
         <div style="text-align:center">
@@ -4523,7 +4056,7 @@ function r_van(){
     <!-- === PRODUCTS BREAKDOWN TABLE === -->
     ${sortedProds.length > 0 ? `
     <div class="sec" style="margin:0;padding:14px;border:1px solid var(--bdr)">
-      <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--tx)">📋 تفصيل الأصناف</div>
+      <div style="font-size:13px;font-weight:800;margin-bottom:10px;color:var(--text)">📋 تفصيل الأصناف</div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead>
