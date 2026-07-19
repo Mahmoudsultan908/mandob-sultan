@@ -348,7 +348,7 @@ function pinTap(e,v){}
     </div>
     <div class="hdr-right" style="display:flex;align-items:center;gap:8px">
       <span id="net-dot" title="الاتصال" style="width:8px;height:8px;border-radius:50%;background:var(--g);display:inline-block;flex-shrink:0;transition:background .3s"></span>
-      <span id="sync-dot" onclick="trySyncQueue()" style="display:none;font-size:11px;color:var(--gold);cursor:pointer;white-space:nowrap"></span>
+      <span id="sync-dot" onclick="showSyncQueueDebug()" style="display:none;font-size:11px;color:var(--gold);cursor:pointer;white-space:nowrap"></span>
       <div class="day-badge day-none" id="day-badge" onclick="dayBadgeClick()" style="cursor:pointer">لا يوجد يوم</div>
     </div>
   </div>
@@ -922,9 +922,15 @@ async function checkRepSession(){
     await sb.auth.signOut();
     return false;
   }
-  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code)').eq('id', profile.id).maybeSingle();
+  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', profile.id).maybeSingle();
   REP = { id: profile.id, name: profile.name || profile.email, treasuryId: repRow?.treasury_id||null, priceLevelCode: repRow?.price_levels?.code||null };
   LS.s('rep', REP);
+  if(repRow){
+    GOAL.target = Number(repRow.daily_sales_target)||0;
+    GOAL.visitsTarget = Number(repRow.daily_visits_target)||0;
+    GOAL.achieved = calcAchieved();
+    LS.s('goal', GOAL);
+  }
   return true;
 }
 
@@ -1266,6 +1272,43 @@ const SYNC_HANDLERS = {
     }, { onConflict: 'rep_id,customer_id,visit_date' });
     if(error) throw error;
   },
+
+  // توريد نقدية — المندوب بيسلّم الكاش اللي معاه للخزنة الرئيسية، فعليًا
+  // تحويل من خزنة المندوب لخزنة تانية (treasury_transfers)، والـ trigger
+  // (fn_treasury_transfer_cash) هو اللي بيحرّك cash_transactions للاتنين
+  deposit: async (payload) => {
+    const { data: mainTreas } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
+    if(!mainTreas?.id) throw new Error('لا يوجد خزنة رئيسية فى سلطان');
+    const repTreasId = await getRepTreasuryId();
+    if(!repTreasId) throw new Error('لا يوجد خزنة مرتبطة بالمندوب');
+    if(repTreasId === mainTreas.id) return; // خزنة المندوب هي نفسها الرئيسية — مفيش تحويل حقيقي
+    const { error } = await sb.from('treasury_transfers').insert({
+      from_treasury_id: repTreasId, to_treasury_id: mainTreas.id, amount: payload.amt, notes: payload.note||'توريد من تطبيق سلطانو',
+    });
+    if(error) throw error;
+  },
+
+  // خط سير يوم معيّن — بيستبدل قايمة العملاء بالكامل بالقايمة المحلية
+  // الحالية (هي المرجع الوحيد للحالة الحالية، مش تراكمية)
+  route_update: async (payload) => {
+    const custIds = payload.customerIds.filter(isRealSultanId);
+    let { data: route } = await sb.from('rep_routes').select('id').eq('rep_id', REP.id).eq('day_of_week', payload.dayKey).maybeSingle();
+    if(!route){
+      const { data: newRoute, error: routeErr } = await sb.from('rep_routes').insert({
+        rep_id: REP.id, name: 'خط '+WEEKDAY_NAMES[payload.wd], day_of_week: payload.dayKey,
+      }).select('id').single();
+      if(routeErr) throw routeErr;
+      route = newRoute;
+    }
+    const { error: delErr } = await sb.from('rep_route_customers').delete().eq('route_id', route.id);
+    if(delErr) throw delErr;
+    if(custIds.length){
+      const { error: insErr } = await sb.from('rep_route_customers').insert(
+        custIds.map((id,i) => ({ route_id: route.id, customer_id: id, sequence: i }))
+      );
+      if(insErr) throw insErr;
+    }
+  },
 };
 
 let _syncingQueue = false;
@@ -1312,6 +1355,41 @@ function updateSyncBadge(){
   d.title = failed ? 'فيه عمليات فشلت فى المزامنة — راجعها' : 'عمليات معلّقة هتتزامن أول ما النت يرجع';
 }
 
+// شاشة متابعة طابور المزامنة — لو عملية عالقة ومش عارفة تتزامن (نادر
+// دلوقتي بعد إصلاح مشكلة الأصناف الوهمية)، هنا تقدر تشوف السبب وتحذفها
+// لو فعلاً مش هتتصلح لوحدها (بيانات قديمة/تالفة)
+const SYNC_KIND_LABELS = { sale:'🧾 بيع', cancel_sale:'🚫 إلغاء فاتورة', collection:'💰 تحصيل', expense:'🛒 مصروف',
+  warehouse_return:'↩️ مرتجع مخزان', customer_return:'↩️ مرتجع عميل', visit:'🗺️ زيارة', deposit:'💸 توريد خزنة', route_update:'🗺️ خط سير' };
+function showSyncQueueDebug(){
+  requireAdmin('متابعة طابور المزامنة', renderSyncQueueDebugModal);
+}
+function renderSyncQueueDebugModal(){
+  const rows = SYNC_QUEUE.length ? SYNC_QUEUE.map(e => `
+    <div style="padding:10px 0;border-bottom:1px solid var(--bdr)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-weight:700;font-size:13px">${SYNC_KIND_LABELS[e.kind]||e.kind}</span>
+        <span style="font-size:11px;color:var(--t3)">${new Date(e.createdAt).toLocaleString('ar-EG')}</span>
+      </div>
+      ${e.attempts>0?`<div style="font-size:12px;color:var(--red);margin-bottom:6px">⚠️ فشلت ${e.attempts} مرة: ${e.error||'—'}</div>`:'<div style="font-size:12px;color:var(--t3);margin-bottom:6px">⏳ لسه فى الانتظار</div>'}
+      <button class="btn btn-r" style="font-size:11px;padding:5px 10px" onclick="deleteSyncQueueEntry('${e.id}')">🗑️ حذف نهائي (لن تتزامن)</button>
+    </div>`).join('') : '<div style="text-align:center;color:var(--t3);padding:20px;font-size:14px">الطابور فاضي — كل حاجة اتزامنت ✅</div>';
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div style="font-size:16px;font-weight:900;color:var(--admin)">📡 طابور المزامنة (${SYNC_QUEUE.length})</div>
+      <span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="al al-o" style="margin-bottom:12px;font-size:12px">الحذف نهائي — العملية دي مش هتتسجل فى سلطان ERP أبداً. استخدمه بس لو متأكد إنها بيانات قديمة/تالفة مش هتتصلح لوحدها.</div>
+    <div style="max-height:300px;overflow-y:auto;margin-bottom:12px">${rows}</div>
+    <button class="btn btn-teal btn-xl" onclick="closeModal();trySyncQueue()">🔄 إعادة محاولة الكل الآن</button>`);
+}
+function deleteSyncQueueEntry(id){
+  SYNC_QUEUE = SYNC_QUEUE.filter(e=>e.id!==id);
+  saveSyncQueue();
+  updateSyncBadge();
+  toast('🗑️ تم حذف العملية من الطابور');
+  renderSyncQueueDebugModal();
+}
+
 window.addEventListener('online', () => trySyncQueue());
 setInterval(() => { if(navigator.onLine) trySyncQueue(); }, 30000);
 
@@ -1327,11 +1405,18 @@ async function verifyRepStillActive(userId){
       return;
     }
     const freshName = profile.name || profile.email;
-    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code)').eq('id', userId).maybeSingle();
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', userId).maybeSingle();
     const freshTreas = repRow?.treasury_id||null, freshLevel = repRow?.price_levels?.code||null;
     if(freshName!==REP.name || freshTreas!==REP.treasuryId || freshLevel!==REP.priceLevelCode){
       REP.name=freshName; REP.treasuryId=freshTreas; REP.priceLevelCode=freshLevel;
       LS.s('rep',REP);
+    }
+    if(repRow){
+      const freshTarget=Number(repRow.daily_sales_target)||0, freshVisits=Number(repRow.daily_visits_target)||0;
+      if(GOAL.target!==freshTarget || GOAL.visitsTarget!==freshVisits){
+        GOAL.target=freshTarget; GOAL.visitsTarget=freshVisits; GOAL.achieved=calcAchieved();
+        LS.s('goal',GOAL);
+      }
     }
   }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني في الخلفية المرة الجاية */ }
 }
@@ -2500,10 +2585,14 @@ function doDeposit(){
   const note=document.getElementById('dep-note')?.value.trim();
   if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
   if(amt<=0){toast('أدخل المبلغ','err');return;}
-  CDAY.deposits.push({id:uid(),amt,note,ts:Date.now()});
+  const depTs=Date.now();
+  CDAY.deposits.push({id:uid(),amt,note,ts:depTs});
   auditLog('توريد خزنة',`${fmt(amt)} ج`);
   tgDeposit(amt);
   saveDay(); toast(`💸 تم التوريد ${fmt(amt)} ج`); r_ledger();
+  // ★ مزامنة حقيقية مع سلطان — التوريد ده فلوس حقيقية بتتحرك من خزنة
+  // المندوب للخزنة الرئيسية، لازم سلطان يعرف بيها زي أي حركة مالية تانية
+  if(REP) queueSync('deposit', {amt, note, ts:depTs});
 }
 function doExpense(){
   const cat=document.getElementById('exp-cat')?.value;
@@ -3065,27 +3154,7 @@ function r_goal(){
       <span class="rv ${p.qty===0?'cr':p.qty<=5?'cx':'cg'}">${p.qty} / ${p.origQty}</span>
     </div>`).join('')||'<div style="color:var(--t3);text-align:center;font-size:13px">لا أصناف</div>'}
   </div>
-  <div class="lock-ph" onclick="requireAdmin('تعديل الأهداف',showGoalAdmin)">🔐 تعديل الأهداف</div>`;
-}
-
-function showGoalAdmin(){
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900;color:var(--admin)">🎯 إعداد الأهداف</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="ig"><div class="il">🎯 هدف المبيعات اليومي (ج)</div>
-      <input type="number" id="g-target" class="ifield" value="${GOAL.target||''}" placeholder="مثال: 5000"></div>
-    <div class="ig" style="margin-bottom:14px"><div class="il">🏪 هدف الزيارات اليومي</div>
-      <input type="number" id="g-visits" class="ifield" value="${GOAL.visitsTarget||''}" placeholder="مثال: 25"></div>
-    <button class="btn btn-adm btn-lg" onclick="saveGoal()">حفظ الأهداف 🎯</button>`);
-}
-
-function saveGoal(){
-  GOAL.target=parseFloat(document.getElementById('g-target')?.value)||0;
-  GOAL.visitsTarget=parseInt(document.getElementById('g-visits')?.value)||0;
-  GOAL.achieved=calcAchieved();
-  LS.s('goal',GOAL); closeModal(); toast('✅ تم حفظ الأهداف'); r_goal();
+  <div style="font-size:11.5px;color:var(--t3);text-align:center;padding:8px 0">🎯 الأهداف بتتحكم فيها من سلطان ERP (🚗 مندوب سلطان → المندوبين) — بتتزامن تلقائي</div>`;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -3272,6 +3341,7 @@ function r_route(){
 
 function switchRouteDay(wd){ ROUTE_DAY_VIEW=wd; r_route(); }
 
+const WEEKDAY_KEYS=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 function addToRouteDay(wd){
   const sel=document.getElementById('route-add-sel');
   const id=sel?.value;
@@ -3282,6 +3352,7 @@ function addToRouteDay(wd){
   saveRoute();
   auditLog('خط السير', `إضافة محل ليوم ${WEEKDAY_NAMES[wd]}`);
   toast('✅ اتضاف لخط السير');
+  if(REP) queueSync('route_update', {wd, dayKey:WEEKDAY_KEYS[wd], customerIds:current.slice()});
   r_route();
 }
 
@@ -3291,6 +3362,7 @@ function removeFromRouteDay(storeId, wd){
   saveRoute();
   auditLog('خط السير', `شيل محل من يوم ${WEEKDAY_NAMES[wd]}`);
   toast('➖ اتشال من خط السير');
+  if(REP) queueSync('route_update', {wd, dayKey:WEEKDAY_KEYS[wd], customerIds:current.slice()});
   r_route();
 }
 // ══════════════════════════════════════════════════════════════════
@@ -3526,6 +3598,11 @@ function r_more(){
     <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   </div>
   <div class="sec">
+    <div class="st">📡 مزامنة سلطان ERP</div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">${SYNC_QUEUE.length?`${SYNC_QUEUE.length} عملية فى الطابور${SYNC_QUEUE.some(e=>e.attempts>0)?' — فيه عمليات فشلت ⚠️':''}`:'كل حاجة اتزامنت مع سلطان ✅'}</div>
+    <button class="btn btn-teal btn-lg" onclick="showSyncQueueDebug()">📡 متابعة طابور المزامنة 🔐</button>
+  </div>
+  <div class="sec">
     <div class="st">⚙️ الإعدادات</div>
     <div class="al al-teal" style="margin-bottom:10px">👤 حساب سلطان: ${REP?.name||'—'}</div>
     <div class="ig"><div class="il">الخط</div><input type="text" id="cfg-route" class="ifield" value="${CFG?.route||''}"></div>
@@ -3675,13 +3752,7 @@ function showAdminCfg(){
         <input type="text" id="adm-tg-chat" class="ifield" value="${CFG?.tgChatId||'726700978'}" placeholder="chat id"></div>
       <button class="btn btn-teal" style="width:100%;font-size:13px" onclick="tgTest()">📤 إرسال رسالة تجربة</button>
     </div>
-    <div class="sec" style="margin-bottom:14px">
-      <div class="st">🎯 الأهداف اليومية</div>
-      <div class="ig"><div class="il">هدف المبيعات (ج)</div>
-        <input type="number" id="adm-goal" class="ifield" value="${GOAL.target||''}"></div>
-      <div class="ig"><div class="il">هدف الزيارات</div>
-        <input type="number" id="adm-visits-goal" class="ifield" value="${GOAL.visitsTarget||''}"></div>
-    </div>
+    <div class="al al-teal" style="margin-bottom:14px;font-size:12px">🎯 الأهداف اليومية بقت بتتحكم فيها من سلطان ERP مباشرة، مش من هنا.</div>
     <button class="btn btn-adm btn-lg" onclick="saveAdminCfg()">💾 حفظ كل الإعدادات</button>`);
 }
 
@@ -3691,8 +3762,6 @@ function saveAdminCfg(){
   const lockDays=parseInt(document.getElementById('adm-lockdays')?.value)||7;
   const tgToken=document.getElementById('adm-tg-token')?.value.trim();
   const tgChatId=document.getElementById('adm-tg-chat')?.value.trim();
-  const g=parseFloat(document.getElementById('adm-goal')?.value)||0;
-  const vg=parseInt(document.getElementById('adm-visits-goal')?.value)||0;
 
   if(p&&p.length===6) CFG.adminPin=p;
   CFG.editMins=editMins;
@@ -3700,9 +3769,6 @@ function saveAdminCfg(){
   if(tgToken) CFG.tgToken=tgToken;
   if(tgChatId) CFG.tgChatId=tgChatId;
   LS.s('cfg',CFG);
-
-  GOAL.target=g; GOAL.visitsTarget=vg; GOAL.achieved=calcAchieved();
-  LS.s('goal',GOAL);
   closeModal(); toast('✅ تم حفظ كل الإعدادات');
 }
 
