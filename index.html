@@ -719,23 +719,29 @@ function getPendingPrevSales(){
   return result;
 }
 
-// deletePrevInvoice — soft-delete (void) all lines of an invoice from a previous day
-function deletePrevInvoice(date, invoiceId){
+// إلغاء فاتورة من يوم سابق — لازم يعمل بالظبط زي confirmSoftDelete
+// (إلغاء نفس اليوم): يرجّع الكمية للعربية، يقلل دين العميل، ويلغي
+// الفاتورة الحقيقية فى سلطان لو كانت اتزامنت بالفعل. قبل الإصلاح ده
+// كانت بس بتعمل void محلي من غير ما ترجع حاجة ولا تلغي حاجة فى سلطان —
+// العميل يفضل عليه دين حقيقي فى سلطان حتى بعد "حذف" الفاتورة محليًا.
+function voidPrevInvoiceLines(date, invoiceId, reason){
   const day = DAYS[date];
-  if(!day || !day.sales) return;
-  day.sales.forEach(s => {
-    if(s.invoiceId === invoiceId){
-      s.void = true;
-      s.voidAt = Date.now();
-      s.voidBy = 'admin';
-      s.voidReason = 'حذف يدوي من الحركات';
-    }
+  if(!day || !day.sales) return 0;
+  const lines = day.sales.filter(s => s.invoiceId === invoiceId && !s.void);
+  let totalVoided = 0;
+  lines.forEach(s => {
+    s.void = true; s.voidAt = Date.now(); s.voidBy = CFG?.name||'admin';
+    s.voidReason = reason || 'حذف يدوي من الحركات'; s.status = 'cancelled';
+    totalVoided += s.total>0 ? s.total : 0;
+    if(s.qty>0){ const p=vanFind(s.prodId); if(p){ p.qty += s.qty+(s.giftQty||0); saveVanStock(); } }
+    if(s.debt && s.custId){ const c=CUSTOMERS.find(x=>x.id===s.custId); if(c) c.debt=Math.max(0,(c.debt||0)-s.total); }
   });
   DAYS[date] = day;
   LS.s('days', DAYS);
-  auditLog('حذف فاتورة سابقة', `${invoiceId} — يوم ${date}`);
-  toast('🗑️ تم حذف الفاتورة');
-  r_ledger();
+  LS.s('customers', CUSTOMERS);
+  GOAL.achieved=calcAchieved(); LS.s('goal',GOAL);
+  cancelSyncedInvoice(invoiceId);
+  return totalVoided;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -768,12 +774,11 @@ function showPrevInvoicesPage(){
     <div class="sec" style="max-height:60vh;overflow-y:auto">${rows}</div>`);
 }
 function deletePrevInvoiceRefresh(date, invoiceId){
-  const day = DAYS[date];
-  if(day && day.sales){
-    day.sales.forEach(s => { if(s.invoiceId === invoiceId){ s.void=true; s.voidAt=Date.now(); s.voidBy='admin'; s.voidReason='حذف يدوي من الحركات'; } });
-    DAYS[date]=day; LS.s('days',DAYS);
-    auditLog('حذف فاتورة سابقة', `${invoiceId} — يوم ${date}`);
-    toast('🗑️ تم حذف الفاتورة');
+  const totalVoided = voidPrevInvoiceLines(date, invoiceId, 'حذف يدوي من الحركات');
+  if(totalVoided>0 || DAYS[date]){
+    auditLog('حذف فاتورة سابقة', `${invoiceId} — يوم ${date} — ${fmt(totalVoided)} ج`);
+    tgVoidInvoice(invoiceId, totalVoided, 'حذف يدوي من الحركات (يوم سابق)');
+    toast('🗑️ تم حذف الفاتورة وإرجاع الكمية والدين');
   }
   showPrevInvoicesPage();
 }
@@ -781,14 +786,11 @@ function clearAllPrevInvoices(){
   const pending = getPendingPrevSales();
   if(!pending.length){ toast('مفيش فواتير سابقة معلقة','err'); return; }
   requireAdmin('مسح كل الفواتير السابقة', ()=>{
+    let grandTotal=0;
     pending.forEach(inv => {
-      const day = DAYS[inv.date];
-      if(!day || !day.sales) return;
-      day.sales.forEach(s => { if(s.invoiceId === inv.invoiceId){ s.void=true; s.voidAt=Date.now(); s.voidBy='admin'; s.voidReason='مسح جماعي للفواتير السابقة'; } });
-      DAYS[inv.date] = day;
+      grandTotal += voidPrevInvoiceLines(inv.date, inv.invoiceId, 'مسح جماعي للفواتير السابقة');
     });
-    LS.s('days', DAYS);
-    auditLog('مسح كل الفواتير السابقة', `${pending.length} فاتورة`);
+    auditLog('مسح كل الفواتير السابقة', `${pending.length} فاتورة — ${fmt(grandTotal)} ج`);
     toast(`🗑️ تم مسح ${pending.length} فاتورة سابقة`);
     showPrevInvoicesPage();
   });
@@ -1097,8 +1099,11 @@ const EXP_CAT_MAP = {
 let _expCatCache = null;
 async function resolveExpenseCategoryId(localCat){
   if(!_expCatCache){
-    const { data } = await sb.from('expense_categories').select('id,name');
-    _expCatCache = data || [];
+    const { data, error } = await sb.from('expense_categories').select('id,name');
+    // فشل مؤقت (شبكة/RLS)؟ نسيب الكاش null عشان يتحاول تاني المرة الجاية،
+    // بدل ما يفضل [] للأبد ويوقف كل المصروفات فى الطابور من غير رجعة
+    if(error || !data) return null;
+    _expCatCache = data;
   }
   const realName = EXP_CAT_MAP[localCat] || localCat;
   return _expCatCache.find(c=>c.name===realName)?.id || null;
@@ -1373,11 +1378,25 @@ function renderSyncQueueDebugModal(){
       ${e.attempts>0?`<div style="font-size:12px;color:var(--red);margin-bottom:6px">⚠️ فشلت ${e.attempts} مرة: ${e.error||'—'}</div>`:'<div style="font-size:12px;color:var(--t3);margin-bottom:6px">⏳ لسه فى الانتظار</div>'}
       <button class="btn btn-r" style="font-size:11px;padding:5px 10px" onclick="deleteSyncQueueEntry('${e.id}')">🗑️ حذف نهائي (لن تتزامن)</button>
     </div>`).join('') : '<div style="text-align:center;color:var(--t3);padding:20px;font-size:14px">الطابور فاضي — كل حاجة اتزامنت ✅</div>';
+
+  // فواتير قديمة اتلغت محليًا بس محتاجة إلغاء يدوي فى سلطان (اتزامنت
+  // قبل ما ربط الفاتورة بمعرّفها الحقيقي يتعمل) — تجميعها من كل الأيام
+  const manualCancels = [];
+  Object.entries(DAYS).forEach(([d,day])=>{
+    (day.needsManualCancelSync||[]).forEach(m=>manualCancels.push({...m, date:d}));
+  });
+  const manualHtml = manualCancels.length ? `
+    <div class="al al-r" style="margin-bottom:12px">
+      <div style="font-weight:700;margin-bottom:6px">🚨 فواتير محتاجة إلغاء يدوي فى سلطان ERP (${manualCancels.length})</div>
+      ${manualCancels.map(m=>`<div style="font-size:12px;padding:2px 0">${m.invId} — ${m.date}</div>`).join('')}
+    </div>` : '';
+
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div style="font-size:16px;font-weight:900;color:var(--admin)">📡 طابور المزامنة (${SYNC_QUEUE.length})</div>
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
+    ${manualHtml}
     <div class="al al-o" style="margin-bottom:12px;font-size:12px">الحذف نهائي — العملية دي مش هتتسجل فى سلطان ERP أبداً. استخدمه بس لو متأكد إنها بيانات قديمة/تالفة مش هتتصلح لوحدها.</div>
     <div style="max-height:300px;overflow-y:auto;margin-bottom:12px">${rows}</div>
     <button class="btn btn-teal btn-xl" onclick="closeModal();trySyncQueue()">🔄 إعادة محاولة الكل الآن</button>`);
@@ -2142,13 +2161,25 @@ function executeSell(isDebt){
 
   const invoiceId='INV-'+Date.now();
   const priceMap=window._checkoutPriceMap||null;
+
+  // تحقق من كل سطور السلة الأول قبل ما نلمس أي حاجة — لو سطر واحد
+  // تجاوز المتاح، نوقف الفاتورة كلها بدل ما نبيعها ناقصة صنف من غير
+  // ما المندوب ياخد باله (كان بيحصل قبل كده لو المخزون تغيّر فى الخلفية
+  // — sync وصل أو صنف اتخصم من مكان تاني — بين ما فتح السلة وأكّد الدفع)
+  for(const c of cart){
+    const p=vanFind(c.prodId);
+    if(!p){ toast('صنف مش موجود فى مخزون العربية','err'); sellLock=false; return; }
+    const{offer}=cprice(c.prodId,c.qty,priceMap);
+    const gq=offer?.type==='gift'?Math.floor(c.qty/offer.triggerQty)*offer.giftQty:0;
+    if(c.qty+gq>p.qty){ toast(`الكمية أكثر من المتاح: ${p.name} — أعد فتح السلة وتأكد من الكمية`,'err'); sellLock=false; return; }
+  }
+
   let billT=0;
   const syncItems=[];
   cart.forEach(c=>{
     const p=vanFind(c.prodId); if(!p)return;
     const{unit,total,offer}=cprice(c.prodId,c.qty,priceMap);
     const gq=offer?.type==='gift'?Math.floor(c.qty/offer.triggerQty)*offer.giftQty:0;
-    if(c.qty+gq>p.qty){toast(`الكمية أكثر من المتاح: ${p.name}`,'err'); sellLock=false; return;}
     p.qty-=c.qty+gq;
     billT+=total;
     if(isDebt&&custId){const cu=CUSTOMERS.find(x=>x.id===custId);if(cu)cu.debt=(cu.debt||0)+total;}
