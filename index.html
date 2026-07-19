@@ -1030,7 +1030,7 @@ async function syncVanStockFromSultan(){
   if(SYNC_QUEUE.some(e=>e.kind==='sale' && e.status==='pending')) return {added:0,updated:0,error:null,skipped:true};
   try{
     const { data, error } = await sb.from('van_stock')
-      .select('product_id, qty, products(name, retail_price, wholesale_price, unit)')
+      .select('product_id, qty, products(name, retail_price, wholesale_price, unit, purchase_price)')
       .eq('rep_id', REP.id);
     if(error) return {added:0,updated:0,error:error.message};
 
@@ -1050,12 +1050,17 @@ async function syncVanStockFromSultan(){
     (data||[]).forEach(row=>{
       const qty = Number(row.qty)||0;
       const price = levelPriceMap[row.product_id] || Number(row.products?.retail_price) || Number(row.products?.wholesale_price) || 0;
+      // تكلفة الشراء الحالية — لازم تتسجّل مع كل صنف عشان الفاتورة لما
+      // تتزامن مع سلطان تبعت cost_price_snapshot صحيح (راجع executeSell/
+      // SYNC_HANDLERS.sale تحت). من غيرها كانت الفواتير بتوصل بتكلفة صفر
+      // فهامش الربح فى داشبورد سلطان كان بيظهر أعلى بكتير من الحقيقي.
+      const cost = Number(row.products?.purchase_price)||0;
       let p = VAN_STOCK.find(x=>x.id===row.product_id);
       if(!p){
-        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, qty, origQty:qty, unit:row.products?.unit||'', _sultanSynced:true});
+        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, cost, qty, origQty:qty, unit:row.products?.unit||'', _sultanSynced:true});
         added++;
-      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price)){
-        p.qty=qty; p.price=price; p.name=row.products?.name||p.name;
+      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost)){
+        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name;
         updated++;
       }
     });
@@ -1183,6 +1188,7 @@ const SYNC_HANDLERS = {
       p_items: items.map(it => ({
         product_id: it.productId, qty: it.qty, unit_price: it.unitPrice, line_total: it.lineTotal,
         unit_type: 'sale_unit', units_per_carton_snapshot: 1,
+        cost_price_snapshot: it.costPrice || 0,
       })),
     });
     if(error) throw error;
@@ -2183,7 +2189,7 @@ function executeSell(isDebt){
     billT+=total;
     if(isDebt&&custId){const cu=CUSTOMERS.find(x=>x.id===custId);if(cu)cu.debt=(cu.debt||0)+total;}
     CDAY.sales.push({id:uid(),prodId:p.id,name:p.name,emoji:p.emoji,qty:c.qty,giftQty:gq,unit,total,custName,custId,debt:isDebt,ts:Date.now(),invoiceId,void:false});
-    syncItems.push({productId:p.id, qty:c.qty, unitPrice:unit, lineTotal:total, freeQty:gq});
+    syncItems.push({productId:p.id, qty:c.qty, unitPrice:unit, lineTotal:total, freeQty:gq, costPrice:Number(p.cost)||0});
   });
 
   let discAmt=(window._checkoutDisc)||0;
