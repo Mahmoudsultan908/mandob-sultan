@@ -971,15 +971,24 @@ async function checkRepSession(){
 async function syncCustomersFromSultan(){
   if(!REP || !navigator.onLine) return {added:0,updated:0,error:null};
   try{
-    const { data, error } = await sb.from('customers')
-      .select('id,name,phone,address,balance,is_active,credit_limit')
-      .or(`primary_rep_id.eq.${REP.id},default_rep_id.eq.${REP.id}`);
+    const [{ data, error }, { data: groups }] = await Promise.all([
+      sb.from('customers')
+        .select('id,name,phone,address,balance,is_active,credit_limit,group_id')
+        .or(`primary_rep_id.eq.${REP.id},default_rep_id.eq.${REP.id}`),
+      sb.from('customer_groups').select('id, price_levels(code)'),
+    ]);
     if(error) return {added:0,updated:0,error:error.message};
+
+    // خريطة مستوى السعر الافتراضي لكل مجموعة عملاء: groupId => LEVELCODE
+    // (نفس منطق INV_DB.groupLevelMap فى sales.js بتاع سلطان ERP)
+    const groupLevelMap = {};
+    (groups||[]).forEach(g=>{ const code=g.price_levels?.code; if(code) groupLevelMap[g.id]=code; });
 
     let added=0, updated=0;
     (data||[]).filter(c=>c.is_active!==false).forEach(sc=>{
       let st=STORES.find(s=>s.id===sc.id);
       let cu=CUSTOMERS.find(c=>c.id===sc.id);
+      const priceLevelCode = sc.group_id ? (groupLevelMap[sc.group_id]||null) : null;
       if(!st){
         STORES.push({id:sc.id, name:sc.name, phone:sc.phone||'', address:sc.address||'', note:'', visits:[], oldDebt:Number(sc.balance)||0});
         added++;
@@ -996,11 +1005,15 @@ async function syncCustomersFromSultan(){
         if(changed) updated++;
       }
       if(!cu){
-        CUSTOMERS.push({id:sc.id, name:sc.name, phone:sc.phone||'', debt:0, creditLimit:Number(sc.credit_limit)||0});
+        CUSTOMERS.push({id:sc.id, name:sc.name, phone:sc.phone||'', debt:0, creditLimit:Number(sc.credit_limit)||0, priceLevelCode});
       } else {
-        if(cu.name!==sc.name){ cu.name=sc.name; updated++; }
+        let cuChanged=false;
+        if(cu.name!==sc.name){ cu.name=sc.name; cuChanged=true; }
         const freshLimit=Number(sc.credit_limit)||0;
-        if(cu.creditLimit!==freshLimit){ cu.creditLimit=freshLimit; updated++; }
+        if(cu.creditLimit!==freshLimit){ cu.creditLimit=freshLimit; cuChanged=true; }
+        // مستوى السعر مش رصيد مالي — مأمون نحدّثه كل مرة زي الاسم/التليفون بالظبط
+        if(cu.priceLevelCode!==priceLevelCode){ cu.priceLevelCode=priceLevelCode; cuChanged=true; }
+        if(cuChanged) updated++;
       }
     });
     if(added||updated){ LS.s('stores',STORES); LS.s('customers',CUSTOMERS); }
@@ -1851,25 +1864,64 @@ function filterSell(q){
   }).join('')||'<div style="color:var(--t3);text-align:center;padding:14px">لا نتائج</div>';
 }
 
-// price calc with offers
-function cprice(prodId,qty){
+// price calc with offers — overridePriceMap اختياري: لو موجود وفيه سعر
+// لصنف بعينه، بيغلب سعر العربية الأساسي (مستوى سعر العميل بدل مستوى
+// سعر المندوب الثابت). العروض (OFFERS) بتفضل الأولوية دايمًا فوق أي سعر.
+function cprice(prodId,qty,overridePriceMap){
   const p=vanFind(prodId); if(!p)return{unit:0,total:0,offer:null};
   const off=OFFERS.find(o=>o.active&&o.prodId===prodId&&qty>=o.triggerQty);
   if(off&&off.type==='price') return{unit:off.discPrice,total:off.discPrice*qty,offer:off};
-  return{unit:p.price,total:p.price*qty,offer:off?.type==='gift'?off:null};
+  const ov=overridePriceMap&&overridePriceMap[prodId];
+  const unit=(ov!=null)?ov:p.price;
+  return{unit,total:unit*qty,offer:off?.type==='gift'?off:null};
+}
+
+// ── تسعير مستوى العميل (لو معين لمجموعة عملاء ليها مستوى سعر خاص) ──
+// كاش فى الذاكرة بس (مش محتاج يتخزن محلياً — بيتجدد كل جلسة/مزامنة)،
+// بيتحمّل عند الطلب لأصناف السلة الحالية بس (مش كل الكتالوج) عشان
+// يفضل خفيف وسريع.
+let LEVEL_PRICE_MAPS = {}; // {levelCode: {productId: price|null}}
+async function ensureLevelPrices(code, productIds){
+  if(!code || !productIds.length) return;
+  LEVEL_PRICE_MAPS[code] = LEVEL_PRICE_MAPS[code] || {};
+  const missing = productIds.filter(id=>!(id in LEVEL_PRICE_MAPS[code]));
+  if(!missing.length) return;
+  const { data: lvl } = await sb.from('price_levels').select('id').eq('code', code).maybeSingle();
+  if(!lvl){ missing.forEach(id=>LEVEL_PRICE_MAPS[code][id]=null); return; }
+  const { data: prices } = await sb.from('product_prices').select('product_id,price').eq('price_level_id', lvl.id).in('product_id', missing);
+  missing.forEach(id=>LEVEL_PRICE_MAPS[code][id]=null);
+  (prices||[]).forEach(pr=>{ LEVEL_PRICE_MAPS[code][pr.product_id]=Number(pr.price)||0; });
+}
+// بيرجع خريطة سعر العميل المختار فى شاشة الدفع، لو ليه مستوى سعر مختلف
+// عن مستوى المندوب الثابت — أو null لو عميل عابر/جديد أو نفس المستوى
+async function resolveCustPriceMap(custId){
+  if(!custId || custId==='_new') return null;
+  const cu = CUSTOMERS.find(c=>c.id===custId);
+  if(!cu || !cu.priceLevelCode || cu.priceLevelCode===REP.priceLevelCode) return null;
+  await ensureLevelPrices(cu.priceLevelCode, cart.map(c=>c.prodId));
+  return LEVEL_PRICE_MAPS[cu.priceLevelCode];
 }
 
 // ── CHECKOUT ──────────────────────────────────────────────────────
-function openCheckout(){
-  if(!cart.length){toast('السلة فاضية','err');return;}
+let _checkoutCustId = '';
+function buildCheckoutPricing(overrideMap){
   let base=0, linesHtml='';
   cart.forEach(c=>{
     const p=vanFind(c.prodId); if(!p)return;
-    const{unit,total,offer}=cprice(c.prodId,c.qty);
+    const{total,offer}=cprice(c.prodId,c.qty,overrideMap);
     const gq=offer?.type==='gift'?Math.floor(c.qty/offer.triggerQty)*offer.giftQty:0;
     base+=total;
     linesHtml+=`<div class="row"><span class="rl">${p.emoji||'📦'} ${p.name} × ${c.qty}${gq?' (+'+gq+'🎁)':''}</span><span class="rv cg">${fmt(total)} ج</span></div>`;
   });
+  let disc=0;
+  if(activeInvOffer){const ao=INV_OFFERS.find(o=>o.id===activeInvOffer);if(ao){ if(ao.type==='pct') disc=Math.round(base*(ao.value/100)); else if(ao.type==='fixed') disc=Math.min(ao.value,base); }}
+  return {base, linesHtml, disc, finalT:base-disc};
+}
+function openCheckout(){
+  if(!cart.length){toast('السلة فاضية','err');return;}
+  _checkoutCustId = '';
+  window._checkoutPriceMap = null;
+  const {base, linesHtml, disc, finalT} = buildCheckoutPricing(null);
 
   const eligible=INV_OFFERS.filter(o=>o.active&&base>=o.minTotal);
   let invHtml='';
@@ -1877,31 +1929,28 @@ function openCheckout(){
     invHtml='<div class="sec" style="margin-bottom:12px"><div class="st">🎁 عروض الفاتورة</div>';
     eligible.forEach(o=>{
       const isAct=activeInvOffer===o.id;
-      const disc=o.type==='pct'?Math.round(base*(o.value/100)):o.type==='fixed'?Math.min(o.value,base):0;
+      const odisc=o.type==='pct'?Math.round(base*(o.value/100)):o.type==='fixed'?Math.min(o.value,base):0;
       invHtml+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--bdr)">
         <div><div style="font-size:14px;font-weight:700;color:var(--gold)">${o.name}</div>
-        <div style="font-size:12px;color:var(--t2)">${o.type==='pct'?`خصم ${o.value}% = ${fmt(disc)} ج`:o.type==='fixed'?`خصم نقدي ثابت = ${fmt(disc)} ج`:`هدية: ${o.giftDesc}`}</div></div>
+        <div style="font-size:12px;color:var(--t2)">${o.type==='pct'?`خصم ${o.value}% = ${fmt(odisc)} ج`:o.type==='fixed'?`خصم نقدي ثابت = ${fmt(odisc)} ج`:`هدية: ${o.giftDesc}`}</div></div>
         <button class="btn ${isAct?'btn-g':'btn-o'}" style="font-size:13px;padding:8px 12px" onclick="togInvOff('${o.id}')">
           ${isAct?'✓ مفعّل':'تفعيل'}</button>
       </div>`;
     });
     invHtml+='</div>';
   }
-  let disc=0;
-  if(activeInvOffer){const ao=INV_OFFERS.find(o=>o.id===activeInvOffer);if(ao){ if(ao.type==='pct') disc=Math.round(base*(ao.value/100)); else if(ao.type==='fixed') disc=Math.min(ao.value,base); }}
-  const finalT=base-disc;
-  const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${c.debt>0?' ('+fmt(c.debt)+' ج)':''}</option>`).join('');
+  const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${c.debt>0?' ('+fmt(c.debt)+' ج)':''}${c.priceLevelCode&&c.priceLevelCode!==REP.priceLevelCode?' ⭐':''}</option>`).join('');
 
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div style="font-size:17px;font-weight:900">🧾 تأكيد الفاتورة</div><span class="m-close" onclick="closeModal()">✕</span>
     </div>
-    <div class="sec" style="margin-bottom:10px">${linesHtml}</div>
+    <div class="sec" style="margin-bottom:10px" id="ck-lines">${linesHtml}</div>
     ${invHtml}
-    ${disc>0?`<div class="al al-g" style="margin-bottom:10px">🎉 خصم: ${fmt(disc)} ج</div>`:''}
+    <div id="ck-disc">${disc>0?`<div class="al al-g" style="margin-bottom:10px">🎉 خصم: ${fmt(disc)} ج</div>`:''}</div>
     <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg3);border-radius:13px;padding:13px 15px;margin-bottom:13px;border:2px solid var(--g)">
       <span style="font-size:14px;color:var(--t2)">إجمالي الفاتورة</span>
-      <span style="font-size:24px;font-weight:900;color:var(--g)">${fmt(finalT)} ج</span>
+      <span style="font-size:24px;font-weight:900;color:var(--g)" id="ck-total">${fmt(finalT)} ج</span>
     </div>
     <div class="ig">
       <div class="il">العميل ${`<span style="color:var(--orange);font-size:12px">(مطلوب للآجل)</span>`}</div>
@@ -1910,6 +1959,7 @@ function openCheckout(){
         ${custOpts}
         <option value="_new">+ عميل جديد</option>
       </select>
+      <div id="ck-level-note" style="display:none;font-size:12px;color:var(--gold);margin-top:5px">⭐ الأسعار دي على مستوى سعر العميل الخاص</div>
     </div>
     <div id="new-cust-row" style="display:none;margin-bottom:10px">
       <input type="text" id="new-cust-n" class="ifield" placeholder="اسم العميل *" style="margin-bottom:6px">
@@ -1922,7 +1972,26 @@ function openCheckout(){
   window._checkoutBase=base; window._checkoutDisc=disc;
 }
 function togInvOff(id){ activeInvOffer=activeInvOffer===id?null:id; openCheckout(); }
-function onCustSel(){ const v=document.getElementById('ck-cust')?.value; document.getElementById('new-cust-row').style.display=v==='_new'?'block':'none'; }
+async function onCustSel(){
+  const v=document.getElementById('ck-cust')?.value;
+  document.getElementById('new-cust-row').style.display=v==='_new'?'block':'none';
+  _checkoutCustId = v;
+  // قفل زراير الدفع أثناء جلب سعر مستوى العميل (لو محتاج) عشان محدش يدفع
+  // بسعر قديم فى نص اللحظة اللي بتاخدها المكالمة
+  const btnC=document.getElementById('btn-cash'), btnD=document.getElementById('btn-debt');
+  if(btnC)btnC.disabled=true; if(btnD)btnD.disabled=true;
+  const map = await resolveCustPriceMap(v);
+  window._checkoutPriceMap = map;
+  const {base, linesHtml, disc, finalT} = buildCheckoutPricing(map);
+  const linesEl=document.getElementById('ck-lines'), totalEl=document.getElementById('ck-total'),
+        discEl=document.getElementById('ck-disc'), noteEl=document.getElementById('ck-level-note');
+  if(linesEl) linesEl.innerHTML=linesHtml;
+  if(totalEl) totalEl.textContent=fmt(finalT)+' ج';
+  if(discEl) discEl.innerHTML=disc>0?`<div class="al al-g" style="margin-bottom:10px">🎉 خصم: ${fmt(disc)} ج</div>`:'';
+  if(noteEl) noteEl.style.display=map?'block':'none';
+  window._checkoutBase=base; window._checkoutDisc=disc;
+  if(btnC)btnC.disabled=false; if(btnD)btnD.disabled=false;
+}
 
 function doSell(isDebt){
   if(sellLock)return; 
@@ -1983,11 +2052,12 @@ function executeSell(isDebt){
   }
 
   const invoiceId='INV-'+Date.now();
+  const priceMap=window._checkoutPriceMap||null;
   let billT=0;
   const syncItems=[];
   cart.forEach(c=>{
     const p=vanFind(c.prodId); if(!p)return;
-    const{unit,total,offer}=cprice(c.prodId,c.qty);
+    const{unit,total,offer}=cprice(c.prodId,c.qty,priceMap);
     const gq=offer?.type==='gift'?Math.floor(c.qty/offer.triggerQty)*offer.giftQty:0;
     if(c.qty+gq>p.qty){toast(`الكمية أكثر من المتاح: ${p.name}`,'err'); sellLock=false; return;}
     p.qty-=c.qty+gq;
@@ -2021,7 +2091,7 @@ function executeSell(isDebt){
   // Telegram notification
   const saleLines = cart.map(c=>{
     const p=vanFind(c.prodId);
-    const{unit,total}=cprice(c.prodId,c.qty);
+    const{total}=cprice(c.prodId,c.qty,priceMap);
     return {emoji:p?.emoji||'📦',name:p?.name||'',qty:c.qty,total};
   });
   tgSale(saleLines, custName, finalT, isDebt, invoiceId, custId);
