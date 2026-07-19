@@ -971,11 +971,15 @@ async function checkRepSession(){
 async function syncCustomersFromSultan(){
   if(!REP || !navigator.onLine) return {added:0,updated:0,error:null};
   try{
-    const [{ data, error }, { data: groups }] = await Promise.all([
+    const [{ data, error }, { data: groups }, { data: pendingReqs }] = await Promise.all([
       sb.from('customers')
-        .select('id,name,phone,address,balance,is_active,credit_limit,group_id')
+        .select('id,name,phone,address,balance,is_active,credit_limit,debt_locked,group_id')
         .or(`primary_rep_id.eq.${REP.id},default_rep_id.eq.${REP.id}`),
       sb.from('customer_groups').select('id, price_levels(code)'),
+      // طلبات التعديل اللي لسه معلّقة — تعديلات المندوب المحلية بتتجاهل
+      // فى المزامنة لحد ما تتراجع وتتعتمد (وإلا كانت هتترجع لقيمة سلطان
+      // القديمة كل مزامنة قبل ما الأدمن يشوفها أصلاً)
+      sb.from('customer_change_requests').select('customer_id').eq('rep_id', REP.id).eq('request_type','edit').eq('status','pending'),
     ]);
     if(error) return {added:0,updated:0,error:error.message};
 
@@ -983,18 +987,20 @@ async function syncCustomersFromSultan(){
     // (نفس منطق INV_DB.groupLevelMap فى sales.js بتاع سلطان ERP)
     const groupLevelMap = {};
     (groups||[]).forEach(g=>{ const code=g.price_levels?.code; if(code) groupLevelMap[g.id]=code; });
+    const pendingEditIds = new Set((pendingReqs||[]).map(r=>r.customer_id));
 
     let added=0, updated=0;
     (data||[]).filter(c=>c.is_active!==false).forEach(sc=>{
       let st=STORES.find(s=>s.id===sc.id);
       let cu=CUSTOMERS.find(c=>c.id===sc.id);
       const priceLevelCode = sc.group_id ? (groupLevelMap[sc.group_id]||null) : null;
+      const hasPendingEdit = pendingEditIds.has(sc.id);
       if(!st){
         STORES.push({id:sc.id, name:sc.name, phone:sc.phone||'', address:sc.address||'', note:'', visits:[], oldDebt:Number(sc.balance)||0});
         added++;
       } else {
         let changed=false;
-        if(st.name!==sc.name || st.phone!==(sc.phone||'') || st.address!==(sc.address||'')){
+        if(!hasPendingEdit && (st.name!==sc.name || st.phone!==(sc.phone||'') || st.address!==(sc.address||''))){
           st.name=sc.name; st.phone=sc.phone||''; st.address=sc.address||'';
           changed=true;
         }
@@ -1005,12 +1011,14 @@ async function syncCustomersFromSultan(){
         if(changed) updated++;
       }
       if(!cu){
-        CUSTOMERS.push({id:sc.id, name:sc.name, phone:sc.phone||'', debt:0, creditLimit:Number(sc.credit_limit)||0, priceLevelCode});
+        CUSTOMERS.push({id:sc.id, name:sc.name, phone:sc.phone||'', debt:0, creditLimit:Number(sc.credit_limit)||0, debtLocked:!!sc.debt_locked, priceLevelCode});
       } else {
         let cuChanged=false;
-        if(cu.name!==sc.name){ cu.name=sc.name; cuChanged=true; }
+        if(!hasPendingEdit && cu.name!==sc.name){ cu.name=sc.name; cuChanged=true; }
         const freshLimit=Number(sc.credit_limit)||0;
         if(cu.creditLimit!==freshLimit){ cu.creditLimit=freshLimit; cuChanged=true; }
+        const freshLocked=!!sc.debt_locked;
+        if(cu.debtLocked!==freshLocked){ cu.debtLocked=freshLocked; cuChanged=true; }
         // مستوى السعر مش رصيد مالي — مأمون نحدّثه كل مرة زي الاسم/التليفون بالظبط
         if(cu.priceLevelCode!==priceLevelCode){ cu.priceLevelCode=priceLevelCode; cuChanged=true; }
         if(cuChanged) updated++;
@@ -1132,6 +1140,14 @@ async function resolveRealCustomerId(localId, name, phone){
     default_rep_id: REP.id, balance: 0,
   }).select('id').single();
   if(error) throw new Error('تعذّر إنشاء العميل فى سلطان: '+error.message);
+
+  // العميل بيتسجّل فورًا عشان المندوب يقدر يبيعله فى نفس اللحظة — لكن
+  // بيتحط فى طابور مراجعة الأدمن عشان يتأكد من الاسم/التليفون بعدين
+  // (مش قفل للبيع، مجرد مراجعة). فشل التسجيل هنا ماينفعش يوقف البيع.
+  sb.from('customer_change_requests').insert({
+    request_type: 'new', customer_id: data.id, rep_id: REP.id,
+    proposed_name: name || 'عميل مندوب', proposed_phone: phone || null,
+  }).then(()=>{}, ()=>{});
 
   _custIdMap[localId] = data.id;
   LS.s('custIdMap', _custIdMap);
@@ -2800,26 +2816,13 @@ function editCustomer(custId){
     <div class="ig"><div class="il">الرصيد الافتتاحي (ج)</div><input type="number" id="ec-olddebt" class="ifield" value="${store.oldDebt||0}" placeholder="0"></div>
     <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="saveCustomerEdit('${custId}')">✅ حفظ التعديلات</button>
     <div class="sec" style="margin-top:14px">
-      <div class="st">🔒 إعدادات الآجل (المدير فقط)</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px">
-        <input type="checkbox" id="ec-debtlock" ${cust.debtLocked?'checked':''} style="width:18px;height:18px">
-        قفل بيع الآجل لهذا العميل — مايتباعش ليه آجل غير بباسورد المدير
-      </label>
-      <div class="ig" style="margin-bottom:10px"><div class="il">حد ائتمان مسموح بيه بدون باسورد (ج) — سيبه 0 لو عايز قفل تام</div>
-        <input type="number" id="ec-creditlimit" class="ifield" value="${cust.creditLimit||0}" placeholder="0"></div>
-      <button class="btn btn-adm btn-lg" style="width:100%" onclick="requireAdmin('تعديل إعدادات الآجل',()=>saveDebtLock('${custId}'))">حفظ إعدادات الآجل 🔐</button>
+      <div class="st">🔒 إعدادات الآجل</div>
+      <div class="al ${cust.debtLocked?'al-r':'al-g'}" style="margin-bottom:0">
+        ${cust.debtLocked?'🔒 الآجل مقفول لهذا العميل من سلطان ERP — نقدي وتحصيل بس':'🔓 الآجل مسموح لهذا العميل'}
+        ${cust.creditLimit>0?`<div style="font-size:12px;margin-top:4px">الحد الائتماني: ${fmt(cust.creditLimit)} ج</div>`:''}
+      </div>
+      <div style="font-size:11.5px;color:var(--t3);margin-top:8px">الإعداد ده بيتحكم فيه من سلطان ERP (بيانات أساسية → العملاء) مش من هنا — بيتزامن تلقائي.</div>
     </div>`);
-}
-function saveDebtLock(custId){
-  const cust=CUSTOMERS.find(c=>c.id===custId);
-  if(!cust) return;
-  cust.debtLocked = !!document.getElementById('ec-debtlock')?.checked;
-  cust.creditLimit = parseFloat(document.getElementById('ec-creditlimit')?.value)||0;
-  LS.s('customers',CUSTOMERS);
-  auditLog('إعدادات الآجل', `${cust.name} — قفل:${cust.debtLocked?'نعم':'لا'} حد:${fmt(cust.creditLimit)}`);
-  toast('✅ اتحفظت إعدادات الآجل');
-  closeModal();
-  r_customers();
 }
 
 function saveCustomerEdit(custId){
@@ -2839,7 +2842,20 @@ function saveCustomerEdit(custId){
   }
   LS.s('stores',STORES);
   auditLog('EditCustomer','تعديل بيانات العميل '+name);
-  toast('✅ تم حفظ بيانات العميل');
+  // عميل حقيقي متزامن من سلطان؟ التعديل بيتحفظ محليًا فورًا (يظهر عندك
+  // على تليفونك دلوقتي)، بس مايتطبقش على سلطان نفسه غير بعد ما الأدمن
+  // يراجعه ويعتمده — عشان كده بيتبعت كطلب مراجعة مش تحديث مباشر
+  if(isRealSultanId(custId) && REP){
+    sb.from('customer_change_requests').insert({
+      request_type: 'edit', customer_id: custId, rep_id: REP.id,
+      proposed_name: name, proposed_phone: phone||null, proposed_address: addr||null,
+    }).then(
+      ()=>{ toast('✅ اتحفظ التعديل عندك، وهيتراجع من سلطان ERP قريب'); },
+      ()=>{ toast('✅ اتحفظ محليًا (تعذّر إرسال طلب المراجعة، حاول تاني لما تكون أونلاين)','err'); }
+    );
+  } else {
+    toast('✅ تم حفظ بيانات العميل');
+  }
   closeModal();
   r_customers();
 }
