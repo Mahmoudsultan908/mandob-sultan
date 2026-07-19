@@ -1293,26 +1293,23 @@ const SYNC_HANDLERS = {
     if(error) throw error;
   },
 
-  // خط سير يوم معيّن — بيستبدل قايمة العملاء بالكامل بالقايمة المحلية
-  // الحالية (هي المرجع الوحيد للحالة الحالية، مش تراكمية)
-  route_update: async (payload) => {
-    const custIds = payload.customerIds.filter(isRealSultanId);
+  // إضافة عميل واحد لخط سير يوم معيّن — insert-only/idempotent، مش
+  // استبدال. خط السير بقى بيتحدد أساسًا من سلطان ERP (🗺️ زيارات
+  // المندوبين → خطوط السير)، والمندوب يقدر يضيف بس مايشيلش — فلازم
+  // المزامنة تفضل إضافية بس عشان مايمحيش حاجة الأدمن حطها بنفسه.
+  route_add_customer: async (payload) => {
+    if(!isRealSultanId(payload.customerId)) return;
     let { data: route } = await sb.from('rep_routes').select('id').eq('rep_id', REP.id).eq('day_of_week', payload.dayKey).maybeSingle();
     if(!route){
       const { data: newRoute, error: routeErr } = await sb.from('rep_routes').insert({
-        rep_id: REP.id, name: 'خط '+WEEKDAY_NAMES[payload.wd], day_of_week: payload.dayKey,
+        rep_id: REP.id, name: 'خط '+payload.wdName, day_of_week: payload.dayKey,
       }).select('id').single();
       if(routeErr) throw routeErr;
       route = newRoute;
     }
-    const { error: delErr } = await sb.from('rep_route_customers').delete().eq('route_id', route.id);
-    if(delErr) throw delErr;
-    if(custIds.length){
-      const { error: insErr } = await sb.from('rep_route_customers').insert(
-        custIds.map((id,i) => ({ route_id: route.id, customer_id: id, sequence: i }))
-      );
-      if(insErr) throw insErr;
-    }
+    const { error: insErr } = await sb.from('rep_route_customers')
+      .upsert({ route_id: route.id, customer_id: payload.customerId }, { onConflict: 'route_id,customer_id', ignoreDuplicates: true });
+    if(insErr) throw insErr;
   },
 };
 
@@ -1364,7 +1361,7 @@ function updateSyncBadge(){
 // دلوقتي بعد إصلاح مشكلة الأصناف الوهمية)، هنا تقدر تشوف السبب وتحذفها
 // لو فعلاً مش هتتصلح لوحدها (بيانات قديمة/تالفة)
 const SYNC_KIND_LABELS = { sale:'🧾 بيع', cancel_sale:'🚫 إلغاء فاتورة', collection:'💰 تحصيل', expense:'🛒 مصروف',
-  warehouse_return:'↩️ مرتجع مخزان', customer_return:'↩️ مرتجع عميل', visit:'🗺️ زيارة', deposit:'💸 توريد خزنة', route_update:'🗺️ خط سير' };
+  warehouse_return:'↩️ مرتجع مخزان', customer_return:'↩️ مرتجع عميل', visit:'🗺️ زيارة', deposit:'💸 توريد خزنة', route_add_customer:'🗺️ إضافة لخط سير' };
 function showSyncQueueDebug(){
   requireAdmin('متابعة طابور المزامنة', renderSyncQueueDebugModal);
 }
@@ -1568,6 +1565,7 @@ function launchApp(){
     syncCustomersFromSultan();
     syncVanStockFromSultan();
     syncWarehouseFromSultan();
+    syncRouteFromSultan();
     reconcileCancelledInvoices();
     trySyncQueue();
     updateSyncBadge();
@@ -3271,7 +3269,7 @@ function storeCardHtml(s, i, opts){
     <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
     <div style="display:flex;gap:6px">
       <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustStatement('${s.id}')">كشف حساب</button>
-      ${opts.removeFromRouteDay!=null?`<button class="btn btn-r" style="font-size:12px;padding:9px 9px" onclick="removeFromRouteDay('${s.id}',${opts.removeFromRouteDay})">➖ شيل</button>`:`<button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>`}
+      ${opts.routeView?'':`<button class="btn btn-r" style="font-size:12px;padding:9px 12px" onclick="requireAdmin('حذف محل',()=>delStore(${i}))">🗑️</button>`}
     </div>
   </div>`;
 }
@@ -3408,13 +3406,14 @@ function r_route(){
     return `<button class="btn ${i===wd?'btn-blue':'btn-b'}" style="flex:1;font-size:11px;padding:8px 2px" onclick="switchRouteDay(${i})">${WEEKDAY_SHORT[i]}${cnt?` (${cnt})`:''}</button>`;
   }).join('');
 
-  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {removeFromRouteDay: wd})).join('')
+  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {routeView: true})).join('')
     || `<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">مفيش محلات في خط سير ${WEEKDAY_NAMES[wd]} لسه — ضيف من تحت</div>`;
 
   const addOptionsHtml = otherStores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
 
   document.getElementById('pg-route').innerHTML=`
   <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${dayTabs}</div>
+  <div class="al al-teal" style="margin-bottom:12px;font-size:12px">🔒 خط السير بيتحدد من سلطان ERP — تقدر تضيف محل جديد بس، مايتشالش من هنا</div>
   <div class="sec" style="margin-bottom:12px">
     <div class="st">🗺️ خط سير ${WEEKDAY_NAMES[wd]}${isToday?' — النهاردة':''} (${routeStores.length} محل)</div>
     <div style="display:flex;gap:8px">
@@ -3428,6 +3427,10 @@ function r_route(){
 function switchRouteDay(wd){ ROUTE_DAY_VIEW=wd; r_route(); }
 
 const WEEKDAY_KEYS=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+// المندوب يقدر يضيف محل لخط سيره بس — الحذف/التعديل بيتم من سلطان ERP
+// بس (🗺️ زيارات المندوبين → خطوط السير). إضافة واحدة idempotent، مش
+// استبدال للقايمة كلها، عشان لو الأدمن ضاف حاجة من عنده بعد آخر مزامنة
+// محلية، إضافة المندوب مايمحيهاش بالغلط.
 function addToRouteDay(wd){
   const sel=document.getElementById('route-add-sel');
   const id=sel?.value;
@@ -3438,17 +3441,7 @@ function addToRouteDay(wd){
   saveRoute();
   auditLog('خط السير', `إضافة محل ليوم ${WEEKDAY_NAMES[wd]}`);
   toast('✅ اتضاف لخط السير');
-  if(REP) queueSync('route_update', {wd, dayKey:WEEKDAY_KEYS[wd], customerIds:current.slice()});
-  r_route();
-}
-
-function removeFromRouteDay(storeId, wd){
-  const current = (ROUTE.templates[wd]||[]).filter(id=>id!==storeId);
-  ROUTE.templates[wd]=current;
-  saveRoute();
-  auditLog('خط السير', `شيل محل من يوم ${WEEKDAY_NAMES[wd]}`);
-  toast('➖ اتشال من خط السير');
-  if(REP) queueSync('route_update', {wd, dayKey:WEEKDAY_KEYS[wd], customerIds:current.slice()});
+  if(REP) queueSync('route_add_customer', {dayKey:WEEKDAY_KEYS[wd], wdName:WEEKDAY_NAMES[wd], customerId:id});
   r_route();
 }
 // ══════════════════════════════════════════════════════════════════
@@ -4085,6 +4078,33 @@ async function resyncWarehouse(){
   await syncWarehouseFromSultan();
   toast('✅ اتزامن — '+WAREHOUSE.length+' صنف');
   r_orders();
+}
+
+// خط السير بقى بيتحدد أساسًا من سلطان ERP — نسحبه هنا كمرجع أساسي بدل
+// ما يفضل local بس. المندوب لسه يقدر يضيف (queueSync('route_add_customer'))
+// لكن مايشيلش، فالسحب ده آمن يستبدل القايمة المحلية بالكامل كل مرة —
+// مفيش خطر إننا نمسح إضافة محلية لسه معلّقة فى الطابور، لأن الإضافة دي
+// idempotent وهتترحّل تاني فى المزامنة الجاية لو لسه مش واصلة سلطان.
+async function syncRouteFromSultan(){
+  if(!REP || !navigator.onLine) return;
+  // لو لسه فيه إضافة معلّقة فى الطابور، منسحبش دلوقتي عشان منمسحهاش
+  // من الشاشة لحد ما تتزامن فعلاً وتترجع فى السحب الجاي
+  if(SYNC_QUEUE.some(e=>e.kind==='route_add_customer' && e.status==='pending')) return;
+  try{
+    const { data, error } = await sb.from('rep_routes')
+      .select('day_of_week, rep_route_customers(customer_id)')
+      .eq('rep_id', REP.id);
+    if(error || !data) return;
+    const dayIndex = {}; WEEKDAY_KEYS.forEach((k,i)=>dayIndex[k]=i);
+    const templates = {};
+    data.forEach(r=>{
+      const wd = dayIndex[r.day_of_week];
+      if(wd==null) return;
+      templates[wd] = (r.rep_route_customers||[]).map(rc=>rc.customer_id);
+    });
+    ROUTE.templates = templates;
+    saveRoute();
+  }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني المرة الجاية */ }
 }
 
 // ═══ CSV EXPORT ══════════════════════════════════════════════════
