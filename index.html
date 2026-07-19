@@ -1568,6 +1568,7 @@ function launchApp(){
     syncCustomersFromSultan();
     syncVanStockFromSultan();
     syncWarehouseFromSultan();
+    reconcileCancelledInvoices();
     trySyncQueue();
     updateSyncBadge();
   }
@@ -2498,6 +2499,60 @@ function cancelSyncedInvoice(invId){
     CDAY.needsManualCancelSync.push({invId, ts:Date.now()});
     saveDay();
   }
+}
+
+// ★ مشكلة حقيقية اتلاقت: لو الأدمن ألغى/عدّل فاتورة المندوب من سلطان
+// ERP مباشرة (مش من تليفون المندوب نفسه)، تليفون المندوب معندوش أي
+// طريقة يعرف بيها ده حصل — شاشته فضلت توريله الفاتورة القديمة نشطة.
+// الحل: كل ما التطبيق يفتح، نتأكد من حالة كل فاتورة سبق وتزامنت
+// (_invoiceIdMap) فى سلطان — لو سلطان قايلها cancelled ومحليًا لسه
+// نشطة، نلغيها هنا كمان (زي إلغاء عادي بالظبط) وننبّه المندوب بوضوح.
+// مش محتاجين نلمس van_stock هنا — syncVanStockFromSultan بيرجعه صح
+// تلقائي فى نفس دورة الفتح دي أصلاً.
+async function reconcileCancelledInvoices(){
+  if(!REP || !navigator.onLine) return;
+  const entries = Object.entries(_invoiceIdMap);
+  if(!entries.length) return;
+  try{
+    const realIds = [...new Set(entries.map(([,rid])=>rid))];
+    const { data, error } = await sb.from('sales').select('id,status').in('id', realIds);
+    if(error || !data) return;
+    const statusById = {};
+    data.forEach(s=>{ statusById[s.id]=s.status; });
+
+    let reconciledCount=0, reconciledTotal=0;
+    Object.keys(DAYS).forEach(date=>{
+      const day = DAYS[date];
+      if(!day?.sales?.length) return;
+      let dayChanged=false;
+      entries.forEach(([localInvId, realId])=>{
+        if(statusById[realId]!=='cancelled') return;
+        const lines = day.sales.filter(s=>s.invoiceId===localInvId && !s.void);
+        if(!lines.length) return;
+        lines.forEach(s=>{
+          s.void=true; s.voidAt=Date.now(); s.voidBy='سلطان ERP';
+          s.voidReason='اتلغت أو اتعدّلت من سلطان ERP مباشرة';
+          s.status='cancelled';
+          reconciledTotal += s.total>0 ? s.total : 0;
+          if(s.debt && s.custId){ const c=CUSTOMERS.find(x=>x.id===s.custId); if(c) c.debt=Math.max(0,(c.debt||0)-s.total); }
+        });
+        reconciledCount++;
+        dayChanged=true;
+        tgVoidInvoice(localInvId, lines.reduce((a,l)=>a+(l.total>0?l.total:0),0), 'اتلغت من سلطان ERP');
+      });
+      if(dayChanged) DAYS[date]=day;
+    });
+
+    if(reconciledCount){
+      LS.s('days', DAYS);
+      LS.s('customers', CUSTOMERS);
+      GOAL.achieved=calcAchieved(); LS.s('goal',GOAL);
+      auditLog('مطابقة مع سلطان', `${reconciledCount} فاتورة اتلغت من سلطان — ${fmt(reconciledTotal)} ج`);
+      toast(`⚠️ ${reconciledCount} فاتورة اتلغت/اتعدّلت من سلطان ERP وترجّعت عندك — راجع كشف الحساب`,'err');
+      if(document.getElementById('pg-ledger')?.classList.contains('on')) r_ledger();
+      if(document.getElementById('pg-sell')?.classList.contains('on')) r_sell();
+    }
+  }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني المرة الجاية */ }
 }
 
 function showEditInvoice(invId){
