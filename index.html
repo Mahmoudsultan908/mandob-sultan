@@ -960,14 +960,19 @@ async function checkRepSession(){
 // مزامنة العملاء من سلطان ERP — سحب فقط (pull) مش نسخ مزدوج، عشان
 // محدش يبني نظام عملاء موازي. عملاء سلطان الحقيقيين المرتبطين بالمندوب
 // ده (primary_rep_id أو default_rep_id) بيتضافوا لقائمة المحلات المحلية.
-// آمن للتكرار: عميل موجود بالفعل بيتحدث اسمه/تليفونه بس، من غير ما
-// نلمس oldDebt/debt المحليين (لسه مفيش مزامنة فاتورة حقيقية للخلف —
-// Phase 3 — فمينفعش نثق برصيد سلطان يعكس نشاط المندوب المحلي النهاردة)
+// آمن للتكرار: عميل موجود بالفعل بيتحدث اسمه/تليفونه/حد الائتمان دايمًا.
+// أما oldDebt فبيتحدّث بس لو مفيش نشاط آجل محلي غير متزامن على العميل
+// ده (cu.debt<=0) — لو المندوب باع له آجل من تليفونه ولسه في طابور
+// المزامنة، نسيب oldDebt زي ما هو عشان منضاعفش الدين (رصيد سلطان
+// هيبقى فيه نفس البيعة دي أول ما تتزامن، فتحديث oldDebt وقتها هيبقى
+// مكرر فوق cu.debt المحلي). لو مفيش نشاط محلي خالص، رصيد سلطان هو
+// المرجع الوحيد ومأمون نحدّثه كل مرة — ده اللي بيحل حالة إن الأدمن
+// باع للعميل من سلطان ERP مباشرة والمندوب معندوش نشاط محلي عليه أصلاً.
 async function syncCustomersFromSultan(){
   if(!REP || !navigator.onLine) return {added:0,updated:0,error:null};
   try{
     const { data, error } = await sb.from('customers')
-      .select('id,name,phone,address,balance,is_active')
+      .select('id,name,phone,address,balance,is_active,credit_limit')
       .or(`primary_rep_id.eq.${REP.id},default_rep_id.eq.${REP.id}`);
     if(error) return {added:0,updated:0,error:error.message};
 
@@ -978,14 +983,24 @@ async function syncCustomersFromSultan(){
       if(!st){
         STORES.push({id:sc.id, name:sc.name, phone:sc.phone||'', address:sc.address||'', note:'', visits:[], oldDebt:Number(sc.balance)||0});
         added++;
-      } else if(st.name!==sc.name || st.phone!==(sc.phone||'') || st.address!==(sc.address||'')){
-        st.name=sc.name; st.phone=sc.phone||''; st.address=sc.address||'';
-        updated++;
+      } else {
+        let changed=false;
+        if(st.name!==sc.name || st.phone!==(sc.phone||'') || st.address!==(sc.address||'')){
+          st.name=sc.name; st.phone=sc.phone||''; st.address=sc.address||'';
+          changed=true;
+        }
+        if(!(cu&&cu.debt>0)){
+          const freshBalance=Number(sc.balance)||0;
+          if(st.oldDebt!==freshBalance){ st.oldDebt=freshBalance; changed=true; }
+        }
+        if(changed) updated++;
       }
       if(!cu){
-        CUSTOMERS.push({id:sc.id, name:sc.name, phone:sc.phone||'', debt:0});
-      } else if(cu.name!==sc.name){
-        cu.name=sc.name;
+        CUSTOMERS.push({id:sc.id, name:sc.name, phone:sc.phone||'', debt:0, creditLimit:Number(sc.credit_limit)||0});
+      } else {
+        if(cu.name!==sc.name){ cu.name=sc.name; updated++; }
+        const freshLimit=Number(sc.credit_limit)||0;
+        if(cu.creditLimit!==freshLimit){ cu.creditLimit=freshLimit; updated++; }
       }
     });
     if(added||updated){ LS.s('stores',STORES); LS.s('customers',CUSTOMERS); }
