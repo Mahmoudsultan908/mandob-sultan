@@ -2412,8 +2412,36 @@ function showCashBrief(){
       <div style="font-size:14px;color:var(--admin);font-weight:700;margin-bottom:16px">💵 إجمالي الفلوس في الإيد</div>
       <div style="font-size:52px;font-weight:900;color:var(--g)">${fmt(s.expected)} ج</div>
       <div style="font-size:13px;color:var(--t2);margin-top:8px">عهدة: ${fmt(CDAY.startCash)} + نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
+      <div style="font-size:11px;color:var(--t3);margin-top:4px">(ده حساب مبني على حركاتك النهارده بس)</div>
+      <div style="margin-top:18px;padding-top:16px;border-top:1px dashed var(--bdr)">
+        <div style="font-size:12.5px;color:var(--t2);margin-bottom:6px">🏦 الرصيد الفعلي في خزنتك على سلطان الآن</div>
+        <div id="cash-brief-live" style="font-size:28px;font-weight:900;color:var(--blue)">⏳ جاري التحميل...</div>
+        <div style="font-size:11px;color:var(--t3);margin-top:4px">ده الرقم الحقيقي — بياخد فى الاعتبار أي تحويل عملّه الأدمن من سلطان ERP مباشرة</div>
+      </div>
       <button class="btn btn-b" style="width:100%;margin-top:20px" onclick="closeModal()">إغلاق</button>
     </div>`);
+  loadLiveCashBrief();
+}
+
+// ★ الرصيد الحقيقي بتاع خزنة المندوب من السيرفر مباشرة (get_cash_balance) —
+// بيتقري لايف كل مرة المودال يتفتح، عكس "متوقع" اللي محسوب محليًا من
+// حركات المندوب النهارده بس ومبيعرفش لو الأدمن عمل تحويل من خزنته مباشرة
+// من سلطان ERP. الاتنين مقصودين مع بعض: "متوقع" لتصفية آخر اليوم
+// (المندوب بيتحاسب عليها)، والرقم ده للشفافية بس مش بيغيّر منطق الإغلاق.
+async function loadLiveCashBrief(){
+  const el=document.getElementById('cash-brief-live');
+  if(!el) return;
+  try{
+    const repTreasId = await getRepTreasuryId();
+    if(!repTreasId){ el.textContent='—'; el.style.color='var(--t3)'; return; }
+    const { data, error } = await sb.rpc('get_cash_balance', { p_treasury_id: repTreasId });
+    if(error) throw error;
+    const liveEl=document.getElementById('cash-brief-live');
+    if(liveEl) liveEl.textContent=fmt(Number(data)||0)+' ج';
+  }catch(e){
+    const liveEl=document.getElementById('cash-brief-live');
+    if(liveEl){ liveEl.textContent='⚠️ تعذّر التحميل'; liveEl.style.color='var(--red)'; liveEl.style.fontSize='14px'; }
+  }
 }
 
 function showVoidList(){
