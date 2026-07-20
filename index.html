@@ -984,9 +984,18 @@ async function syncCustomersFromSultan(){
           st.name=sc.name; st.phone=sc.phone||''; st.address=sc.address||'';
           changed=true;
         }
-        if(!(cu&&cu.debt>0)){
+        // ★ روت-كوز فيكس: الشرط القديم (cu.debt>0) كان بيمنع تحديث oldDebt
+        //   لو فيه دين محلي "لسه معلّق"، بس مكانش بيتصفّر أبداً بعد ما
+        //   العملية فعلاً تتزامن بنجاح (تتشال من SYNC_QUEUE) — يعني أول ما
+        //   دين محلي يحصل لعميل، oldDebt بتاعه بيتجمد للأبد وميتحدّثش تاني
+        //   من رصيد سلطان الحقيقي، حتى لو الأدمن غيّر حاجة فى رصيده من
+        //   سلطان ERP مباشرة. الإشارة الصح لـ"لسه فيه حاجة معلّقة" هي وجود
+        //   عملية للعميل ده لسه فى طابور المزامنة، مش قيمة cu.debt نفسها.
+        const hasPendingSync = SYNC_QUEUE.some(q => q?.payload?.custId === sc.id);
+        if(!hasPendingSync){
           const freshBalance=Number(sc.balance)||0;
           if(st.oldDebt!==freshBalance){ st.oldDebt=freshBalance; changed=true; }
+          if(cu && cu.debt>0){ cu.debt=0; changed=true; }
         }
         if(changed) updated++;
       }
