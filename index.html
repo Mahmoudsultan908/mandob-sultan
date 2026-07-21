@@ -1080,6 +1080,162 @@ async function syncVanStockFromSultan(){
 }
 
 // ══════════════════════════════════════════════════════════════════
+// تحميل العربية بنفس المندوب — بند 1، تقرير 2026-07-21. المندوب أصلاً
+// داخل بحسابه الحقيقي (إيميل/باسورد)، الـPIN هنا تأكيد إضافي بس قبل
+// حركة مخزون حساسة، مش بديل عن تسجيل الدخول. عمدًا أونلاين بس (مش
+// جوه طابور المزامنة زي البيع/المرتجع) — التحميل بيحصل عادةً في
+// المخزن نفسه وقت الاتصال، ومحتاج رصيد لحظي حقيقي من inventory_stock
+// عشان نمنع تحميل أكتر من المتاح فعليًا (نفس منطق سلطان ERP الإداري
+// بالظبط — van-stock-load.js — بس هنا المندوب هو اللي بيعمله لنفسه).
+let VL_PICK = { warehouseId: null, stock: {}, products: [], selected: {} };
+
+async function openVanLoadPicker(){
+  if(!REP){ toast('سجّل دخول أولاً','err'); return; }
+  if(!navigator.onLine){ toast('التحميل محتاج اتصال بالإنترنت','err'); return; }
+  openModal(`<div style="padding:20px;text-align:center"><div style="font-size:28px;margin-bottom:8px">⏳</div>جاري تحميل بيانات المخزن...</div>`);
+  try{
+    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
+    if(!repRow?.van_load_pin){
+      openModal(`<div style="padding:20px;text-align:center">
+        <div style="font-size:32px;margin-bottom:10px">🔒</div>
+        <div style="font-weight:700;margin-bottom:6px">التحميل الذاتي لسه مش مفعّل ليك</div>
+        <div style="font-size:13px;color:var(--t3)">كلّم الأدمن يحدّدلك PIN من شاشة "المندوبين" في سلطان ERP</div>
+      </div>`);
+      return;
+    }
+    const { data: mainWh } = await sb.from('warehouses').select('id,name').eq('is_main', true).limit(1).maybeSingle();
+    if(!mainWh?.id) throw new Error('لا يوجد مخزن رئيسي فى سلطان');
+    const [{ data: stock }, { data: products }] = await Promise.all([
+      sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', mainWh.id),
+      sb.from('products').select('id,name,code,unit,images').eq('is_active', true).order('name'),
+    ]);
+    VL_PICK.warehouseId = mainWh.id;
+    VL_PICK.stock = {};
+    (stock||[]).forEach(s=>{ VL_PICK.stock[s.product_id] = Number(s.qty)||0; });
+    VL_PICK.products = products||[];
+    VL_PICK.selected = {};
+    vlRenderPickModal(mainWh.name);
+  }catch(e){ toast('خطأ: '+e.message,'err'); closeModal(); }
+}
+
+function vlRenderPickModal(whName){
+  openModal(`
+  <div style="padding:16px;max-height:82vh;display:flex;flex-direction:column">
+    <div style="font-size:16px;font-weight:900;margin-bottom:3px">🚗 حمّل عربيتك بنفسك</div>
+    <div style="font-size:11.5px;color:var(--t3);margin-bottom:12px">من: ${whName} — مش هتقدر تحمّل أكتر من المتاح فعليًا بالمخزن</div>
+    <input type="text" id="vlPickSearch" placeholder="🔍 بحث بالاسم أو الكود..." oninput="vlRenderPickList(this.value)"
+      style="padding:10px 12px;border-radius:10px;border:1px solid var(--bdr);background:var(--bg3);color:var(--text);font-family:inherit;font-size:14px">
+    <div id="vlPickList" style="margin-top:10px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;min-height:200px"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <span id="vlPickCount" style="font-size:12px;color:var(--t3);flex:1">مفيش أصناف متحددة</span>
+      <button class="btn btn-b" onclick="closeModal()">إلغاء</button>
+      <button class="btn btn-g" onclick="vlProceedToPin()">متابعة →</button>
+    </div>
+  </div>`);
+  vlRenderPickList('');
+}
+
+function vlRenderPickList(q){
+  const box = document.getElementById('vlPickList');
+  if(!box) return;
+  q = (q||'').trim();
+  const list = q ? VL_PICK.products.filter(p=>(p.name||'').includes(q)||(p.code||'').includes(q)) : VL_PICK.products;
+  box.innerHTML = list.slice(0,150).map(p=>{
+    const avail = VL_PICK.stock[p.id]||0;
+    const sel = VL_PICK.selected[p.id];
+    const img = p.images && p.images[0];
+    return `<div style="display:flex;align-items:center;gap:10px;padding:9px 10px;border:1.5px solid var(--bdr);border-radius:10px;${avail<=0?'opacity:.4':''}">
+      ${img?`<img src="${img}" style="width:34px;height:34px;object-fit:cover;border-radius:8px;flex-shrink:0">`:'<div style="font-size:22px">📦</div>'}
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</div>
+        <div style="font-size:11px;color:var(--t3)">متاح: ${fmt(avail)} ${p.unit||''}</div>
+      </div>
+      <input type="number" min="0" max="${avail}" step="0.01" value="${sel||''}" placeholder="0" ${avail<=0?'disabled':''}
+        style="width:70px;padding:7px 8px;border-radius:8px;border:1px solid var(--bdr);background:var(--bg4);color:var(--text);font-family:inherit;text-align:center"
+        onchange="vlPickSetQty('${p.id}',this.value,${avail})">
+    </div>`;
+  }).join('') || `<div style="text-align:center;padding:20px;color:var(--t3)">لا توجد نتائج</div>`;
+}
+
+function vlPickSetQty(pid, val, avail){
+  let q = parseFloat(val)||0;
+  if(q > avail){ q = avail; toast('مفيش متاح أكتر من كده بالمخزن','err'); }
+  if(q <= 0) delete VL_PICK.selected[pid];
+  else VL_PICK.selected[pid] = q;
+  const n = Object.keys(VL_PICK.selected).length;
+  const el = document.getElementById('vlPickCount');
+  if(el) el.textContent = n ? `${n} صنف متحدد` : 'مفيش أصناف متحددة';
+  vlRenderPickList(document.getElementById('vlPickSearch')?.value||'');
+}
+
+window.vlProceedToPin = function(){
+  const items = Object.entries(VL_PICK.selected).map(([pid,qty])=>({productId:pid, qty}));
+  if(!items.length){ toast('اختار صنف واحد على الأقل','err'); return; }
+  openModal(`
+  <div style="padding:22px;text-align:center">
+    <div style="font-size:32px;margin-bottom:10px">🔒</div>
+    <div style="font-weight:700;margin-bottom:14px">أدخل PIN التحميل بتاعك للتأكيد</div>
+    <input type="password" inputmode="numeric" id="vlPinInput" maxlength="8" placeholder="••••"
+      style="width:140px;text-align:center;font-size:22px;letter-spacing:6px;padding:10px;border-radius:10px;border:1.5px solid var(--bdr);background:var(--bg3);color:var(--text);font-family:inherit">
+    <div id="vlPinErr" style="color:var(--red);font-size:12px;margin-top:8px;min-height:16px"></div>
+    <div style="margin-top:16px;display:flex;gap:8px">
+      <button class="btn btn-b" style="flex:1" onclick="vlRenderPickModal('')">رجوع</button>
+      <button class="btn btn-g" style="flex:1" onclick="vlConfirmLoad()">✅ تأكيد التحميل</button>
+    </div>
+  </div>`);
+  setTimeout(()=>document.getElementById('vlPinInput')?.focus(),80);
+};
+
+window.vlConfirmLoad = async function(){
+  const pin = (document.getElementById('vlPinInput')?.value||'').trim();
+  const errEl = document.getElementById('vlPinErr');
+  if(!pin){ if(errEl) errEl.textContent='اكتب الـPIN'; return; }
+  const btn = document.querySelector('.modal.open .btn-g');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ جاري التحقق...'; }
+  try{
+    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
+    if(!repRow?.van_load_pin || repRow.van_load_pin !== pin){
+      if(errEl) errEl.textContent='PIN غلط — حاول تاني';
+      if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; }
+      return;
+    }
+    // إعادة التحقق من الرصيد لحظيًا (مش من الكاش) قبل التنفيذ فعليًا —
+    // منعًا لأي تغيّر حصل من وقت ما فتح شاشة الاختيار لحد دلوقتي
+    const pids = Object.keys(VL_PICK.selected);
+    const { data: freshStock } = await sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', VL_PICK.warehouseId).in('product_id', pids);
+    const freshMap = {}; (freshStock||[]).forEach(s=>freshMap[s.product_id]=Number(s.qty)||0);
+    for(const pid of pids){
+      if(VL_PICK.selected[pid] > (freshMap[pid]||0)){
+        const pname = VL_PICK.products.find(p=>p.id===pid)?.name || pid;
+        if(errEl) errEl.textContent = `الرصيد اتغيّر — "${pname}" بقى متاح أقل من اللي طلبته`;
+        if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; }
+        return;
+      }
+    }
+
+    const { count } = await sb.from('van_stock_loads').select('id',{count:'exact',head:true}).eq('rep_id', REP.id).eq('load_date', new Date().toISOString().slice(0,10));
+    const { data: loadRow, error: loadErr } = await sb.from('van_stock_loads').insert({
+      load_no: 'VL-'+Date.now(), warehouse_id: VL_PICK.warehouseId, rep_id: REP.id,
+      load_date: new Date().toISOString().slice(0,10), load_sequence: (count||0)+1,
+      notes: 'تحميل ذاتي من تطبيق مندوب سلطان', created_by: REP.id,
+    }).select('id').single();
+    if(loadErr) throw loadErr;
+    const itemRows = pids.map(pid=>({ load_id: loadRow.id, product_id: pid, qty: VL_PICK.selected[pid],
+      unit_name: VL_PICK.products.find(p=>p.id===pid)?.unit || null }));
+    const { error: itemsErr } = await sb.from('van_stock_load_items').insert(itemRows);
+    if(itemsErr){ await sb.from('van_stock_loads').delete().eq('id', loadRow.id); throw itemsErr; }
+
+    closeModal();
+    toast('✅ اتحمّلت العربية بنجاح ('+pids.length+' صنف)','ok');
+    await syncVanStockFromSultan();
+    if(document.getElementById('pg-van')?.classList.contains('on')) r_van();
+  }catch(e){
+    if(errEl) errEl.textContent = 'خطأ: '+e.message;
+    if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; }
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════
 // طابور المزامنة — العمليات المالية الحقيقية (بيع/تحصيل/مصروف)
 // نفس فلسفة sultan-erp/js/offline.js (queueWrite/trySync) لكن أبسط،
 // مبنية على LS زي باقي التطبيق بدل IndexedDB (حجم بيانات مندوب واحد
@@ -1713,7 +1869,7 @@ async function showStartDay(){
     <div class="sec" style="margin-bottom:14px">
       <div class="st">📦 مخزون العربية</div>
       ${readyCount?`<div class="al al-teal">✅ عندك ${readyCount} صنف جاهز فى العربية (متزامن من سلطان)</div>`:
-        `<div class="al al-r">⚠️ مفيش مخزون محمّل بعد — الأدمن لازم يحمّل عربيتك من سلطان ERP أولاً (🚗 مندوب سلطان → تحميل عربية)</div>`}
+        `<div class="al al-r">⚠️ مفيش مخزون محمّل بعد — روح لتبويب "🚗 سيارة" وحمّل عربيتك بنفسك، أو كلّم الأدمن يحمّلهالك من سلطان ERP</div>`}
     </div>
     <button class="btn btn-g btn-xl" onclick="confirmStartDay()">بدء اليوم ✅</button>`);
 }
@@ -3716,7 +3872,7 @@ function r_more(){
   document.getElementById('pg-more').innerHTML=`
   <div class="sec">
     <div class="st">📦 مخزون السيارة</div>
-    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — التحميل والتحكم بيتم من هناك (🚗 مندوب سلطان → تحميل عربية)</div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — تقدر تحمّل عربيتك بنفسك من تبويب "🚗 سيارة"، أو الأدمن يحمّلهالك من سلطان ERP</div>
     ${VAN_STOCK.length?`<div class="al al-teal">✅ مخزون السيارة: ${VAN_STOCK.length} صنف — ${VAN_STOCK.filter(p=>p.qty>0).length} متاح</div>`:'<div class="al al-o">⚠️ مخزون السيارة فارغ — لسه محدش حمّل عربيتك من سلطان</div>'}
     <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   </div>
@@ -4239,7 +4395,10 @@ function r_van(){
         <div style="font-size:17px;font-weight:900;color:var(--text)">🚗 ملخص السيارة</div>
         <div style="font-size:11px;color:var(--t3);margin-top:2px">${TODAY} — ${CDAY?'يوم مفتوح ✅':'لا يوجد يوم مفتوح'}</div>
       </div>
-      <button class="btn btn-b" style="font-size:12px;padding:6px 12px" onclick="r_van()">🔄 تحديث</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-b" style="font-size:12px;padding:6px 12px" onclick="r_van()">🔄 تحديث</button>
+        <button class="btn btn-g" style="font-size:12px;padding:6px 12px" onclick="openVanLoadPicker()">🚗 حمّل عربيتك</button>
+      </div>
     </div>
 
     <!-- === ROW 1: Loaded + Remaining === -->
