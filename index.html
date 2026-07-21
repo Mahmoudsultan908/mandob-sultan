@@ -1040,7 +1040,7 @@ async function syncVanStockFromSultan(){
   if(SYNC_QUEUE.some(e=>e.kind==='sale' && e.status==='pending')) return {added:0,updated:0,error:null,skipped:true};
   try{
     const { data, error } = await sb.from('van_stock')
-      .select('product_id, qty, products(name, retail_price, wholesale_price, unit, purchase_price)')
+      .select('product_id, qty, products(name, retail_price, wholesale_price, unit, purchase_price, images)')
       .eq('rep_id', REP.id);
     if(error) return {added:0,updated:0,error:error.message};
 
@@ -1065,12 +1065,13 @@ async function syncVanStockFromSultan(){
       // SYNC_HANDLERS.sale تحت). من غيرها كانت الفواتير بتوصل بتكلفة صفر
       // فهامش الربح فى داشبورد سلطان كان بيظهر أعلى بكتير من الحقيقي.
       const cost = Number(row.products?.purchase_price)||0;
+      const img = (row.products?.images && row.products.images[0]) || null;
       let p = VAN_STOCK.find(x=>x.id===row.product_id);
       if(!p){
-        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, cost, qty, origQty:qty, unit:row.products?.unit||'', _sultanSynced:true});
+        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, cost, qty, origQty:qty, unit:row.products?.unit||'', img, _sultanSynced:true});
         added++;
-      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost)){
-        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name;
+      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost || p.img!==img)){
+        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name; p.img=img;
         updated++;
       }
     });
