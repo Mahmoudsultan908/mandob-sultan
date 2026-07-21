@@ -122,6 +122,7 @@ body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-h
 .prow.out{opacity:.28;pointer-events:none}
 .prow.warn{border-color:var(--orange)}
 .pemoji{font-size:28px;flex-shrink:0}
+.pemoji img{width:38px;height:38px;object-fit:cover;border-radius:9px;display:block;background:var(--bg4)}
 .pinfo{flex:1;min-width:0}
 .pname{font-size:15px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pprice{font-size:12px;color:var(--g);font-weight:700;margin-top:1px}
@@ -1909,7 +1910,7 @@ function r_sell(){
     const off = OFFERS.find(o=>o.active&&o.prodId===p.id);
     const low = p.qty>0&&p.qty<=5;
     return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" onclick="tapProd('${p.id}')">
-      <div class="pemoji">${p.emoji||'📦'}</div>
+      <div class="pemoji">${prodVisualHtml(p)}</div>
       <div class="pinfo">
         <div class="pname">${p.name}</div>
         <div class="pprice">${fmt(p.price)} ج/وحدة</div>
@@ -1970,7 +1971,7 @@ function filterSell(q){
     const off=OFFERS.find(o=>o.active&&o.prodId===p.id);
     const low=p.qty>0&&p.qty<=5;
     return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" onclick="tapProd('${p.id}')">
-      <div class="pemoji">${p.emoji||'📦'}</div>
+      <div class="pemoji">${prodVisualHtml(p)}</div>
       <div class="pinfo">
         <div class="pname">${p.name}</div>
         <div class="pprice">${fmt(p.price)} ج/وحدة</div>
@@ -3612,7 +3613,7 @@ function r_orders(){
   const pList=allProds.map(p=>{
     const ci=orderCart.find(c=>c.prodId===p.id);
     return `<div class="prow ${ci?'sel':''}" onclick="tapOP('${p.id}','${p.name.replace(/'/g,"\\'")}','${p.emoji||'📦'}',${p.price})">
-      <div class="pemoji">${p.emoji||'📦'}</div>
+      <div class="pemoji">${prodVisualHtml(p)}</div>
       <div class="pinfo"><div class="pname">${p.name}</div><div class="pprice">${fmt(p.price)} ج</div></div>
       ${ci?`<div class="qpill"><button onclick="event.stopPropagation();adjOC('${p.id}',-1)">−</button><span>${ci.qty}</span><button onclick="event.stopPropagation();adjOC('${p.id}',1)">+</button></div>`:
       `<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">اختر</div>`}
@@ -3654,7 +3655,7 @@ function filterOP(q){
   list.innerHTML=found.map(p=>{
     const ci=orderCart.find(c=>c.prodId===p.id);
     return `<div class="prow ${ci?'sel':''}" onclick="tapOP('${p.id}','${p.name.replace(/'/g,"\\'")}','${p.emoji||'📦'}',${p.price})">
-      <div class="pemoji">${p.emoji||'📦'}</div>
+      <div class="pemoji">${prodVisualHtml(p)}</div>
       <div class="pinfo"><div class="pname">${p.name}</div><div class="pprice">${fmt(p.price)} ج</div></div>
       ${ci?`<div class="qpill"><button onclick="event.stopPropagation();adjOC('${p.id}',-1)">−</button><span>${ci.qty}</span><button onclick="event.stopPropagation();adjOC('${p.id}',1)">+</button></div>`:
       `<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">اختر</div>`}
@@ -4107,12 +4108,21 @@ function onBakFile(input){
 // اللي وراه (تحصيل/مصروفات) بسبب ترتيب الأنواع الحرجة. دلوقتي المخزان
 // بيتزامن تلقائي من جدول products الحقيقي فى سلطان — مفيش تحكم محلي
 // خالص، كل التحكم من سلطان ERP زي باقي الإعدادات.
+// صورة الصنف الحقيقية (products.images[0] في سلطان) في كروت اختيار
+// الصنف — بدل ما كل صنف يظهر بنفس 📦 العام. لو الصنف مالوش صورة (نادر
+// دلوقتي، سلطان بيحط لوجو افتراضي لأي صنف جديد) بيرجع للإيموجي القديم.
+// بند 14، تقرير 2026-07-21 — عمدًا مش بنلمس استخدامات .emoji التانية
+// (رسايل واتساب، الفواتير المطبوعة، الإشعارات) لأنها نص عادي مش HTML.
+function prodVisualHtml(p){
+  if(p && p.img) return `<img src="${p.img}" loading="lazy" onerror="this.replaceWith(document.createTextNode('${p.emoji||'📦'}'))">`;
+  return p?.emoji || '📦';
+}
 async function syncWarehouseFromSultan(){
   if(!navigator.onLine) return;
   try{
-    const { data, error } = await sb.from('products').select('id,name,retail_price,wholesale_price').eq('is_active', true);
+    const { data, error } = await sb.from('products').select('id,name,retail_price,wholesale_price,images').eq('is_active', true);
     if(error) return;
-    WAREHOUSE = (data||[]).map(p=>({ id:p.id, name:p.name, emoji:'📦', price:Number(p.retail_price)||Number(p.wholesale_price)||0 }));
+    WAREHOUSE = (data||[]).map(p=>({ id:p.id, name:p.name, emoji:'📦', img:(p.images&&p.images[0])||null, price:Number(p.retail_price)||Number(p.wholesale_price)||0 }));
     LS.s('warehouse', WAREHOUSE);
   }catch(e){}
 }
