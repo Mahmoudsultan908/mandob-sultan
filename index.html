@@ -1088,7 +1088,7 @@ async function syncVanStockFromSultan(){
 // المخزن نفسه وقت الاتصال، ومحتاج رصيد لحظي حقيقي من inventory_stock
 // عشان نمنع تحميل أكتر من المتاح فعليًا (نفس منطق سلطان ERP الإداري
 // بالظبط — van-stock-load.js — بس هنا المندوب هو اللي بيعمله لنفسه).
-let VL_PICK = { warehouseId: null, stock: {}, products: [], selected: {} };
+let VL_PICK = { warehouseId: null, stock: {}, products: [], selected: {}, hideZero: true };
 
 async function openVanLoadPicker(){
   if(!REP){ toast('سجّل دخول أولاً','err'); return; }
@@ -1115,6 +1115,7 @@ async function openVanLoadPicker(){
     (stock||[]).forEach(s=>{ VL_PICK.stock[s.product_id] = Number(s.qty)||0; });
     VL_PICK.products = products||[];
     VL_PICK.selected = {};
+    VL_PICK.hideZero = true;
     vlRenderPickModal(mainWh.name);
   }catch(e){ toast('خطأ: '+e.message,'err'); closeModal(); }
 }
@@ -1126,6 +1127,10 @@ function vlRenderPickModal(whName){
     <div style="font-size:11.5px;color:var(--t3);margin-bottom:12px">من: ${whName} — مش هتقدر تحمّل أكتر من المتاح فعليًا بالمخزن</div>
     <input type="text" id="vlPickSearch" placeholder="🔍 بحث بالاسم أو الكود..." oninput="vlRenderPickList(this.value)"
       style="padding:10px 12px;border-radius:10px;border:1px solid var(--bdr);background:var(--bg3);color:var(--text);font-family:inherit;font-size:14px">
+    <label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-size:12px;color:var(--t2);cursor:pointer">
+      <input type="checkbox" id="vlPickHideZero" ${VL_PICK.hideZero?'checked':''} onchange="vlPickToggleHideZero(this.checked)">
+      إخفاء الأصناف بدون رصيد بالمخزن
+    </label>
     <div id="vlPickList" style="margin-top:10px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;min-height:200px"></div>
     <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
       <span id="vlPickCount" style="font-size:12px;color:var(--t3);flex:1">مفيش أصناف متحددة</span>
@@ -1136,11 +1141,17 @@ function vlRenderPickModal(whName){
   vlRenderPickList('');
 }
 
+function vlPickToggleHideZero(checked){
+  VL_PICK.hideZero = checked;
+  vlRenderPickList(document.getElementById('vlPickSearch')?.value||'');
+}
+
 function vlRenderPickList(q){
   const box = document.getElementById('vlPickList');
   if(!box) return;
   q = (q||'').trim();
-  const list = q ? VL_PICK.products.filter(p=>(p.name||'').includes(q)||(p.code||'').includes(q)) : VL_PICK.products;
+  let list = q ? VL_PICK.products.filter(p=>(p.name||'').includes(q)||(p.code||'').includes(q)) : VL_PICK.products;
+  if(VL_PICK.hideZero) list = list.filter(p=>(VL_PICK.stock[p.id]||0) > 0);
   box.innerHTML = list.slice(0,150).map(p=>{
     const avail = VL_PICK.stock[p.id]||0;
     const sel = VL_PICK.selected[p.id];
