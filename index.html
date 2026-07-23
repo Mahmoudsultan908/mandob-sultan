@@ -1368,6 +1368,10 @@ const SYNC_HANDLERS = {
         unit_type: 'sale_unit', units_per_carton_snapshot: 1,
         cost_price_snapshot: it.costPrice || 0,
       })),
+      // نفس فكرة ref فى collection/expense — مرجع فريد ثابت لكل فاتورة محلية،
+      // عشان لو المزامنة اتكررت (retry بسبب مشكلة شبكة) سيرفر سلطان يرفض
+      // النسخة التانية بدل ما ينشئ فاتورة مكررة برقم جديد
+      p_ref: 'REP-SALE-'+payload.invoiceId,
     });
     if(error) throw error;
     if(data && data[0] && payload.invoiceId){
