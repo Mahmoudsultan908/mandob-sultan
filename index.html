@@ -1499,6 +1499,23 @@ const SYNC_HANDLERS = {
       .upsert({ route_id: route.id, customer_id: payload.customerId }, { onConflict: 'route_id,customer_id', ignoreDuplicates: true });
     if(insErr) throw insErr;
   },
+
+  // إغلاق اليوم — المندوب فاضل بيقفل من تليفونه زي ما هو دلوقتي (محلي بس)،
+  // ده مجرد نسخة من تقرير الإغلاق بترفع لسلطان ERP عشان الأدمن يشوف حالة
+  // كل مندوب من شاشة "تقرير الإغلاق اليومي". upsert لأن rep_day_closings
+  // فيها UNIQUE(rep_id, close_date) — لو حصل retry ميتكررش الصف.
+  day_close: async (payload) => {
+    const { error } = await sb.from('rep_day_closings').upsert({
+      rep_id: REP.id, close_date: payload.date,
+      expected_cash: payload.expected, actual_cash: payload.actual, diff: payload.diff,
+      total_sales: payload.stats.totalSales, total_cash: payload.stats.totalCash,
+      total_debt: payload.stats.totalDebt, total_collect: payload.stats.totalCollect,
+      total_returns: payload.stats.totalReturns, total_expenses: payload.stats.totalExpenses,
+      total_deposits: payload.stats.totalDeposits, visits: payload.stats.visits,
+      sold_visits: payload.stats.soldVisits, closed_at: payload.closedAt,
+    }, { onConflict: 'rep_id,close_date' });
+    if(error) throw error;
+  },
 };
 
 let _syncingQueue = false;
@@ -1981,6 +1998,7 @@ function confirmCloseDay(){
   CDAY.closeReport = { closedAt:isoNow(), actual, expected:stats.expected, diff:actual-stats.expected, stats };
   saveDay();
   tgCloseDay(stats, actual);
+  queueSync('day_close', { date: CDAY.date||TODAY, expected: stats.expected, actual, diff: actual-stats.expected, stats, closedAt: CDAY.closeReport.closedAt });
   updateDayBadge();
   closeModal();
   toast('🌙 تم إغلاق اليوم بنجاح');
