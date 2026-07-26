@@ -1337,6 +1337,16 @@ async function getRepTreasuryId(){
   return data?.id || null;
 }
 
+// لو المزامنة اتكررت (retry بسبب إغلاق التطبيق أو ضياع الرد بعد ما
+// السيرفر خزّن العملية فعلاً)، الإدخال التاني بنفس الـ ref هيترفض بـ
+// unique violation — ده مش فشل حقيقي، ده تأكيد إن العملية اتسجلت
+// بالفعل من محاولة سابقة. من غير الفحص ده، العنصر كان بيفضل عالق فى
+// طابور المزامنة يتكرر للأبد (فشل متزايد بلا نهاية) رغم إنه متزامن
+// فعلاً — ده بالظبط سبب رسايل "فشلت N مرة" اللي كانت بتظهر.
+function isDuplicateRefError(err){
+  return !!(err && err.code === '23505' && /ref/i.test(err.message||''));
+}
+
 const SYNC_HANDLERS = {
   sale: async (payload) => {
     const items = payload.items.filter(it => isRealSultanId(it.productId));
@@ -1373,7 +1383,17 @@ const SYNC_HANDLERS = {
       // النسخة التانية بدل ما ينشئ فاتورة مكررة برقم جديد
       p_ref: 'REP-SALE-'+payload.invoiceId,
     });
-    if(error) throw error;
+    if(error){
+      if(!isDuplicateRefError(error)) throw error;
+      // اتزامنت فعلاً من محاولة سابقة — نجيب الفاتورة الحقيقية بنفس الـ
+      // ref عشان نكمل ربط invoiceIdMap زي لو المزامنة نجحت من أول مرة
+      const { data: existing } = await sb.from('sales').select('id').eq('ref', 'REP-SALE-'+payload.invoiceId).maybeSingle();
+      if(existing && payload.invoiceId){
+        _invoiceIdMap[payload.invoiceId] = existing.id;
+        LS.s('invoiceIdMap', _invoiceIdMap);
+      }
+      return;
+    }
     if(data && data[0] && payload.invoiceId){
       _invoiceIdMap[payload.invoiceId] = data[0].id;
       LS.s('invoiceIdMap', _invoiceIdMap);
@@ -1396,7 +1416,7 @@ const SYNC_HANDLERS = {
       ref: 'REP-COL-'+payload.ts, customer_id: realCustId, amount: payload.amt,
       status: 'confirmed', treasury_id: repTreasId, created_by: REP.id,
     });
-    if(error) throw error;
+    if(error && !isDuplicateRefError(error)) throw error;
   },
 
   expense: async (payload) => {
@@ -1409,7 +1429,7 @@ const SYNC_HANDLERS = {
       expense_date: new Date(payload.ts).toISOString().slice(0,10),
       status: 'confirmed', treasury_id: repTreasId, created_by: REP.id,
     });
-    if(error) throw error;
+    if(error && !isDuplicateRefError(error)) throw error;
   },
 
   // مرتجع مخزان — نفس نمط van_stock_loads بالعكس (van_stock_returns/
