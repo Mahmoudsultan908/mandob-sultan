@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v12 (ربط سلطان ERP: تسجيل دخول حقيقي + مزامنة فورية)
-const CACHE = 'mandob-sultan-v12';
+// مندوب سلطان — Service Worker v13 (إصلاح تكرار محاولات المزامنة اللانهائي عند تعارض ref)
+const CACHE = 'mandob-sultan-v13';
 const ASSETS = [
   './',
   './index.html',
