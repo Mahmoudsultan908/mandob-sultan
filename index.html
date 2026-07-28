@@ -1636,7 +1636,11 @@ setInterval(() => { if(navigator.onLine) trySyncQueue(); }, 30000);
 
 async function verifyRepStillActive(userId){
   try{
-    const { data:profile } = await sb.from('profiles').select('is_active,role,name,email').eq('id', userId).maybeSingle();
+    const { data:profile, error } = await sb.from('profiles').select('is_active,role,name,email').eq('id', userId).maybeSingle();
+    // خطأ شبكة/RLS مؤقت (مش استجابة حقيقية) — ده مختلف عن "الحساب معطّل
+    // فعلاً"، لازم نتجاهله ونستنى المحاولة الجاية، وإلا أي هزة نت بسيطة
+    // كانت بتتفسّر غلط كتعطيل حساب وتعمل logout قسري فى نص عملية بيع/تحصيل
+    if(error) return;
     if(!profile || profile.role!=='rep' || profile.is_active===false){
       await sb.auth.signOut();
       LS.rm('rep'); REP=null;

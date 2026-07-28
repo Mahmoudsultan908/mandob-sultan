@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v13 (إصلاح تكرار محاولات المزامنة اللانهائي عند تعارض ref)
-const CACHE = 'mandob-sultan-v13';
+// مندوب سلطان — Service Worker v14 (وقف الـ logout القسري الكاذب عند هزة نت فى فحص is_active)
+const CACHE = 'mandob-sultan-v14';
 const ASSETS = [
   './',
   './index.html',
