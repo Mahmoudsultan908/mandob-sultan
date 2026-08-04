@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v14 (وقف الـ logout القسري الكاذب عند هزة نت فى فحص is_active)
-const CACHE = 'mandob-sultan-v14';
+// مندوب سلطان — Service Worker v15 (إزالة العملاء المنقولين/المشالين من مندوب تاني عند المزامنة)
+const CACHE = 'mandob-sultan-v15';
 const ASSETS = [
   './',
   './index.html',

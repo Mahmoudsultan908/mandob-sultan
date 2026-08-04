@@ -1014,17 +1014,36 @@ async function syncCustomersFromSultan(){
         if(cuChanged) updated++;
       }
     });
-    if(added||updated){ LS.s('stores',STORES); LS.s('customers',CUSTOMERS); }
-    return {added,updated,error:null};
-  }catch(e){ return {added:0,updated:0,error:e.message}; }
+
+    // ★ إزالة العملاء اللي بقوا مش تابعين للمندوب ده تاني (اتشال منه من
+    //   سلطان ERP — سواء اتحوّل لمندوب تاني أو اتشال المندوب خالص أو
+    //   العميل اتعطّل). قبل كده الكود ده كان بيضيف/يحدّث بس ومحدش كان
+    //   بيشيل — فالعميل يفضل ظاهر في تليفون المندوب للأبد حتى بعد ما
+    //   يتشال من كارته في سلطان. بنسيب أي عميل لسه ليه عملية معلّقة في
+    //   طابور المزامنة (بيع/تحصيل لسه ما اتزامنش) لحد ما تتزامن، عشان
+    //   منضيعش نشاط محلي لسه معلّق.
+    const freshIds = new Set((data||[]).filter(c=>c.is_active!==false).map(c=>c.id));
+    const hasPendingSync = id => SYNC_QUEUE.some(q => q?.payload?.custId === id);
+    const storesBefore = STORES.length;
+    STORES = STORES.filter(st => freshIds.has(st.id) || hasPendingSync(st.id));
+    CUSTOMERS = CUSTOMERS.filter(cu => freshIds.has(cu.id) || hasPendingSync(cu.id));
+    const removed = storesBefore - STORES.length;
+
+    if(added||updated||removed){ LS.s('stores',STORES); LS.s('customers',CUSTOMERS); }
+    return {added,updated,removed,error:null};
+  }catch(e){ return {added:0,updated:0,removed:0,error:e.message}; }
 }
 
 window.manualSyncCustomers = async function(){
   toast('🔄 جاري المزامنة مع سلطان...');
   const r = await syncCustomersFromSultan();
   if(r.error){ toast('❌ فشلت المزامنة: '+r.error,'err'); return; }
-  if(!r.added && !r.updated){ toast('✅ كل حاجة متزامنة بالفعل'); return; }
-  toast(`✅ اتضاف ${r.added} عميل، اتحدّث ${r.updated}`);
+  if(!r.added && !r.updated && !r.removed){ toast('✅ كل حاجة متزامنة بالفعل'); return; }
+  const parts = [];
+  if(r.added) parts.push(`اتضاف ${r.added}`);
+  if(r.updated) parts.push(`اتحدّث ${r.updated}`);
+  if(r.removed) parts.push(`اتشال ${r.removed}`);
+  toast(`✅ ${parts.join('، ')} عميل`);
   if(document.getElementById('pg-stores')?.classList.contains('on')) r_stores();
 };
 
