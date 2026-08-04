@@ -908,6 +908,14 @@ async function checkRepSession(){
 
   if(REP && REP.id===session.user.id){
     if(navigator.onLine) verifyRepStillActive(session.user.id);
+    // ★ روت-كوز فيكس: قبل كده REP كان بيتحمّل من الكاش المحلي هنا ويرجع
+    //   فورًا من غير أي تحديث — يعني لو أدمن غيّر خزنة المندوب أو مستوى
+    //   سعره أو أهدافه من سلطان ERP بعد أول تسجيل دخول ليه على الجهاز
+    //   ده، القيمة القديمة تفضل عالقة محليًا للأبد لحد ما يسجّل خروج
+    //   ويدخل تاني (محدش بيعمل كده فعليًا فى الاستخدام اليومي). ده كان
+    //   السبب فى تحصيل/بيع نقدي بيدخل الخزنة الرئيسية بدل خزنة المندوب
+    //   نفسه رغم إن الخزنة كانت متظبطة صح فى سلطان من زمان.
+    if(navigator.onLine) refreshRepConfig(session.user.id);
     return true;
   }
 
@@ -935,6 +943,28 @@ async function checkRepSession(){
     LS.s('goal', GOAL);
   }
   return true;
+}
+
+// تحديث خفيف لإعدادات المندوب (الخزنة/مستوى السعر/الأهداف) من سلطان ERP
+// كل مرة يفتح التطبيق أونلاين وهو مسجّل دخول بالفعل — راجع التعليق فوق
+// نداءها فى checkRepSession لسبب إضافتها
+async function refreshRepConfig(repId){
+  try{
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', repId).maybeSingle();
+    if(!repRow) return;
+    let changed=false;
+    const newTreasuryId = repRow.treasury_id||null;
+    if(REP.treasuryId!==newTreasuryId){ REP.treasuryId=newTreasuryId; changed=true; }
+    const newPriceLevelCode = repRow.price_levels?.code||null;
+    if(REP.priceLevelCode!==newPriceLevelCode){ REP.priceLevelCode=newPriceLevelCode; changed=true; }
+    if(changed) LS.s('rep', REP);
+    const newTarget = Number(repRow.daily_sales_target)||0;
+    const newVisitsTarget = Number(repRow.daily_visits_target)||0;
+    if(GOAL.target!==newTarget || GOAL.visitsTarget!==newVisitsTarget){
+      GOAL.target=newTarget; GOAL.visitsTarget=newVisitsTarget; GOAL.achieved=calcAchieved();
+      LS.s('goal', GOAL);
+    }
+  }catch{}
 }
 
 // ══════════════════════════════════════════════════════════════════

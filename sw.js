@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v15 (إزالة العملاء المنقولين/المشالين من مندوب تاني عند المزامنة)
-const CACHE = 'mandob-sultan-v15';
+// مندوب سلطان — Service Worker v16 (تحديث خزنة/مستوى سعر المندوب من سلطان كل فتحة أونلاين بدل ما يفضل عالق من أول تسجيل دخول)
+const CACHE = 'mandob-sultan-v16';
 const ASSETS = [
   './',
   './index.html',
