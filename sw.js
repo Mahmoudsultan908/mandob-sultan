@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v16 (تحديث خزنة/مستوى سعر المندوب من سلطان كل فتحة أونلاين بدل ما يفضل عالق من أول تسجيل دخول)
-const CACHE = 'mandob-sultan-v16';
+// مندوب سلطان — Service Worker v17 (وقف حلقة إعادة المحاولة اللانهائية عند تعارض رقم تليفون عميل جديد)
+const CACHE = 'mandob-sultan-v17';
 const ASSETS = [
   './',
   './index.html',

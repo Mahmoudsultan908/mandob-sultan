@@ -1345,16 +1345,44 @@ async function resolveExpenseCategoryId(localCat){
 // بس، وحفظ الربط محلياً عشان أي فاتورة/تحصيل تاني لنفس العميل يستخدم
 // نفس الـ id الحقيقي بدل ما يتكرر عميل بنفس الاسم كل مرة.
 let _custIdMap = LS.g('custIdMap') || {};
+// ★ روت-كوز فيكس: كانت بتحاول تنشئ عميل جديد على طول من غير ما تتأكد إن
+//   مفيش عميل حقيقي بنفس الرقم أصلاً (اتسجّل من مندوب تاني، أو من
+//   سلطانو، أو موجود من زمان). لو الرقم موجود، الإدراج بيفشل على قيد
+//   uniqueness — وبما إن _custIdMap[localId] عمره ما بيتسجّل عند الفشل،
+//   trySyncQueue (كل 30 ثانية) كان بيعيد نفس المحاولة الفاشلة للأبد من
+//   غير أي أمل ينجح، ويوقف أي عملية تانية لنفس العميل (بيع/تحصيل) فى
+//   الطابور وراها لو كانت strict-order.
+function _mapLocalToRealCustomer(localId, realId){
+  _custIdMap[localId] = realId;
+  LS.s('custIdMap', _custIdMap);
+  const cu = CUSTOMERS.find(c=>c.id===localId); if(cu) cu.id = realId;
+  const st = STORES.find(s=>s.id===localId); if(st) st.id = realId;
+  LS.s('customers',CUSTOMERS); LS.s('stores',STORES);
+}
+
 async function resolveRealCustomerId(localId, name, phone){
   if(!localId) return null;
   if(isRealSultanId(localId)) return localId;
   if(_custIdMap[localId]) return _custIdMap[localId];
 
+  if(phone){
+    const { data: existing } = await sb.from('customers').select('id').eq('phone', phone).maybeSingle();
+    if(existing){ _mapLocalToRealCustomer(localId, existing.id); return existing.id; }
+  }
+
   const { data, error } = await sb.from('customers').insert({
     name: name || 'عميل مندوب', phone: phone || null,
     default_rep_id: REP.id, balance: 0,
   }).select('id').single();
-  if(error) throw new Error('تعذّر إنشاء العميل فى سلطان: '+error.message);
+  if(error){
+    // تعارض نادر (رقم اتسجّل فى نفس اللحظة من مصدر تاني) — نجيب العميل
+    // الحقيقي بدل ما نفضل عالقين فى محاولة مستحيلة كل 30 ثانية
+    if(error.code === '23505' && phone){
+      const { data: existing2 } = await sb.from('customers').select('id').eq('phone', phone).maybeSingle();
+      if(existing2){ _mapLocalToRealCustomer(localId, existing2.id); return existing2.id; }
+    }
+    throw new Error('تعذّر إنشاء العميل فى سلطان: '+error.message);
+  }
 
   // العميل بيتسجّل فورًا عشان المندوب يقدر يبيعله فى نفس اللحظة — لكن
   // بيتحط فى طابور مراجعة الأدمن عشان يتأكد من الاسم/التليفون بعدين
@@ -1364,12 +1392,7 @@ async function resolveRealCustomerId(localId, name, phone){
     proposed_name: name || 'عميل مندوب', proposed_phone: phone || null,
   }).then(()=>{}, ()=>{});
 
-  _custIdMap[localId] = data.id;
-  LS.s('custIdMap', _custIdMap);
-  // حدّث الـ id محلياً كمان فى CUSTOMERS/STORES عشان القوائم المحلية تتماشى
-  const cu = CUSTOMERS.find(c=>c.id===localId); if(cu) cu.id = data.id;
-  const st = STORES.find(s=>s.id===localId); if(st) st.id = data.id;
-  LS.s('customers',CUSTOMERS); LS.s('stores',STORES);
+  _mapLocalToRealCustomer(localId, data.id);
   return data.id;
 }
 
