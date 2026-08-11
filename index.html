@@ -1403,7 +1403,26 @@ let _invoiceIdMap = LS.g('invoiceIdMap') || {};
 
 // خزنة المندوب الخاصة بيه (بتتعمل تلقائي لكل مندوب) — لو لأي سبب مش
 // موجودة (حالة نادرة/قديمة)، نرجع للخزنة الرئيسية بدل ما نوقف العملية
+//
+// ★ روت-كوز فيكس تاني (بعد refreshRepConfig): الدالة دي كانت بترجع
+//   REP.treasuryId المخزّن محليًا من غير ما تتأكد إنه لسه صحيح.
+//   refreshRepConfig بيحصل بس وقت فتح التطبيق من جديد (checkRepSession)
+//   — لو المندوب سايب التطبيق شغال أيام (الاستخدام الطبيعي، من غير ما
+//   يقفله فعليًا)، القيمة المخزّنة بتفضل زي ما كانت وقت آخر فتح حتى لو
+//   الخزنة اتغيّرت فى سلطان بعد كده، وأي بيع نقدي/تحصيل كان بيدخل
+//   الخزنة الرئيسية غلط (INV-0418 وحالات قبلها). كل نداء للدالة دي
+//   أصلاً بيحصل وقت مزامنة أونلاين فعلية (SYNC_HANDLERS أو loadLiveCashBrief)،
+//   فمفيش خسارة إننا نجيب القيمة الحقيقية من السيرفر كل مرة بدل ما نثق
+//   فى كاش محلي ممكن يبقى قديم.
 async function getRepTreasuryId(){
+  try{
+    const { data } = await sb.from('sales_reps').select('treasury_id').eq('id', REP.id).maybeSingle();
+    if(data?.treasury_id){
+      if(REP.treasuryId!==data.treasury_id){ REP.treasuryId=data.treasury_id; LS.s('rep', REP); }
+      return data.treasury_id;
+    }
+  }catch{}
+  // فشل الجلب الحي (نادر — أصلاً أونلاين هنا) — ارجع لآخر قيمة معروفة محليًا
   if(REP.treasuryId) return REP.treasuryId;
   const { data } = await sb.from('treasuries').select('id').eq('is_default', true).limit(1).maybeSingle();
   return data?.id || null;

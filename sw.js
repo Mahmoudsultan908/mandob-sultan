@@ -1,5 +1,5 @@
-// مندوب سلطان — Service Worker v17 (وقف حلقة إعادة المحاولة اللانهائية عند تعارض رقم تليفون عميل جديد)
-const CACHE = 'mandob-sultan-v17';
+// مندوب سلطان — Service Worker v18 (خزنة المندوب بتتقرأ حية وقت كل مزامنة بدل كاش محلي ممكن يبقى قديم)
+const CACHE = 'mandob-sultan-v18';
 const ASSETS = [
   './',
   './index.html',
