@@ -499,7 +499,21 @@ const TG = {
   queue  : [],
   _flushing: false,
 
+  // ★ الإرسال بيمر أولاً على سيرفر سلطان (Edge Function اسمها telegram-notify): التوكن
+  //   محفوظ هناك كسر (Secret) مش على تليفون المندوب. لو السيرفر مش جاهز أو فشل، بنرجع
+  //   للطريقة المباشرة القديمة عشان الإشعارات ماتقفش أبداً أثناء الانتقال.
+  async _serverSend(body){
+    try{
+      const { data, error } = await sb.functions.invoke('telegram-notify', { body });
+      return !error && data?.ok === true;
+    }catch(e){ return false; }
+  },
+
   send(text){
+    return this._serverSend({ text }).then(ok => ok || this._legacySend(text));
+  },
+
+  _legacySend(text){
     if(!this.token||!this.chatId) return Promise.resolve(false);
     return fetch(`https://api.telegram.org/bot${this.token}/sendMessage`,{
       method:'POST',
@@ -509,6 +523,13 @@ const TG = {
   },
 
   sendDocument(blob, filename, caption){
+    const sfd=new FormData();
+    if(caption) sfd.append('caption', caption);
+    sfd.append('document', blob, filename);
+    return this._serverSend(sfd).then(ok => ok || this._legacySendDocument(blob, filename, caption));
+  },
+
+  _legacySendDocument(blob, filename, caption){
     if(!this.token||!this.chatId) return Promise.resolve(false);
     const fd=new FormData();
     fd.append('chat_id', this.chatId);
