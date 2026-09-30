@@ -304,7 +304,7 @@ function pinTap(e,v){}
     <div class="al al-teal" style="margin-bottom:16px;text-align:center" id="su-rep-name">مسجّل دخول باسم: —</div>
     <div class="ig"><div class="il">اسم الخط / المنطقة</div><input type="text" id="su-route" class="ifield" placeholder="مثال: خط حلوان"></div>
     <div class="ig"><div class="il">رمز الدخول (4 أرقام)</div><input type="number" id="su-pin" class="ifield" placeholder="مثال: 1234"></div>
-    <div class="ig"><div class="il">رمز المدير (6 أرقام)</div><input type="number" id="su-admin" class="ifield" placeholder="مثال: 236091"></div>
+    <div class="ig"><div class="il">رمز المدير (6 أرقام)</div><input type="number" id="su-admin" class="ifield" placeholder="6 أرقام"></div>
     <div class="ig" style="margin-bottom:20px"><div class="il">تأكيد رمز المدير</div><input type="number" id="su-admin2" class="ifield" placeholder="أعد الكتابة"></div>
     <button class="btn btn-g btn-xl" onclick="finishSetup()">ابدأ العمل 🚀</button>
   </div>
@@ -435,7 +435,8 @@ const LS = {
 // ══════════════════════════════════════════════════════════════════
 let REP       = LS.g('rep')       || null;   // {id,name} — من حساب سلطان الحقيقي (auth.uid())، مش اسم حر محلي
 let NEEDS_SULTAN_LINK = false; // مستخدم حالي (CFG موجود) لسه ما ربطش حساب سلطان — بيكمّل شغله عادي مع تذكير غير مزعج
-let CFG       = LS.g('cfg')       || null;   // {name,route,pin,adminPin,tgToken,tgChatId,lockDays,editMins,visitsTarget}
+let CFG       = LS.g('cfg')       || null;   // {name,route,pin,adminPin,lockDays,editMins,visitsTarget}
+if(CFG && ('tgToken' in CFG || 'tgChatId' in CFG)){ delete CFG.tgToken; delete CFG.tgChatId; LS.s('cfg',CFG); } // تنظيف بقايا توكن تيليجرام القديم من تليفون المندوب
 let DAYS      = LS.g('days')      || {};
 let CUSTOMERS = LS.g('customers') || [];
 let STORES    = LS.g('stores')    || [];
@@ -491,17 +492,14 @@ try{
 }catch(e){}
 
 // ══════════════════════════════════════════════════════════════════
-// TELEGRAM NOTIFICATIONS — token from CFG (not hardcoded)
+// TELEGRAM NOTIFICATIONS — via Edge Function (token lives server-side only)
 // ══════════════════════════════════════════════════════════════════
 const TG = {
-  get token() { return CFG?.tgToken  || '8908417718:AAF0a-IX15eLdcUN6U_v3ixud5Q8RsAEGLo'; },
-  get chatId(){ return CFG?.tgChatId || '726700978'; },
   queue  : [],
   _flushing: false,
 
-  // ★ الإرسال بيمر أولاً على سيرفر سلطان (Edge Function اسمها telegram-notify): التوكن
-  //   محفوظ هناك كسر (Secret) مش على تليفون المندوب. لو السيرفر مش جاهز أو فشل، بنرجع
-  //   للطريقة المباشرة القديمة عشان الإشعارات ماتقفش أبداً أثناء الانتقال.
+  // ★ الإرسال بيتم عن طريق سيرفر سلطان (Edge Function اسمها telegram-notify): التوكن
+  //   ورقم الشات محفوظين هناك كأسرار (Secrets) ومفيش أي منهم على تليفون المندوب.
   async _serverSend(body){
     try{
       const { data, error } = await sb.functions.invoke('telegram-notify', { body });
@@ -510,33 +508,14 @@ const TG = {
   },
 
   send(text){
-    return this._serverSend({ text }).then(ok => ok || this._legacySend(text));
-  },
-
-  _legacySend(text){
-    if(!this.token||!this.chatId) return Promise.resolve(false);
-    return fetch(`https://api.telegram.org/bot${this.token}/sendMessage`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({chat_id:this.chatId, text, parse_mode:'HTML'})
-    }).then(r=>r.ok).catch(()=>false);
+    return this._serverSend({ text });
   },
 
   sendDocument(blob, filename, caption){
     const sfd=new FormData();
     if(caption) sfd.append('caption', caption);
     sfd.append('document', blob, filename);
-    return this._serverSend(sfd).then(ok => ok || this._legacySendDocument(blob, filename, caption));
-  },
-
-  _legacySendDocument(blob, filename, caption){
-    if(!this.token||!this.chatId) return Promise.resolve(false);
-    const fd=new FormData();
-    fd.append('chat_id', this.chatId);
-    if(caption) fd.append('caption', caption);
-    fd.append('document', blob, filename);
-    return fetch(`https://api.telegram.org/bot${this.token}/sendDocument`,{ method:'POST', body:fd })
-      .then(r=>r.ok).catch(()=>false);
+    return this._serverSend(sfd);
   },
 
   notify(text){
@@ -1868,8 +1847,8 @@ function updAD(){
   for(let i=0;i<6;i++){const d=document.getElementById('ad'+i); if(d)d.className='pin-dot'+(i<admBuf.length?' on':'');}
 }
 function checkAdmin(){
-  const correctPin=CFG?.adminPin||'236091';
-  if(admBuf===correctPin){
+  const correctPin=CFG?.adminPin;
+  if(correctPin && admBuf===correctPin){
     document.getElementById('admin-overlay').classList.remove('open');
     admBuf='';
     const cb=admCb; admCb=null;
@@ -4195,10 +4174,6 @@ function showAdminCfg(){
     </div>
     <div class="sec" style="margin-bottom:10px">
       <div class="st">📱 تليجرام</div>
-      <div class="ig"><div class="il">Bot Token</div>
-        <input type="text" id="adm-tg-token" class="ifield" value="${CFG?.tgToken||'8908417718:AAF0a-IX15eLdcUN6U_v3ixud5Q8RsAEGLo'}" placeholder="bot token"></div>
-      <div class="ig"><div class="il">Chat ID</div>
-        <input type="text" id="adm-tg-chat" class="ifield" value="${CFG?.tgChatId||'726700978'}" placeholder="chat id"></div>
       <button class="btn btn-teal" style="width:100%;font-size:13px" onclick="tgTest()">📤 إرسال رسالة تجربة</button>
     </div>
     <div class="al al-teal" style="margin-bottom:14px;font-size:12px">🎯 الأهداف اليومية بقت بتتحكم فيها من سلطان ERP مباشرة، مش من هنا.</div>
@@ -4209,14 +4184,10 @@ function saveAdminCfg(){
   const p=document.getElementById('adm-new')?.value.trim();
   const editMins=parseInt(document.getElementById('adm-editmins')?.value)||30;
   const lockDays=parseInt(document.getElementById('adm-lockdays')?.value)||7;
-  const tgToken=document.getElementById('adm-tg-token')?.value.trim();
-  const tgChatId=document.getElementById('adm-tg-chat')?.value.trim();
 
   if(p&&p.length===6) CFG.adminPin=p;
   CFG.editMins=editMins;
   CFG.lockDays=lockDays;
-  if(tgToken) CFG.tgToken=tgToken;
-  if(tgChatId) CFG.tgChatId=tgChatId;
   LS.s('cfg',CFG);
   closeModal(); toast('✅ تم حفظ كل الإعدادات');
 }
