@@ -1,5 +1,5 @@
 // مندوب سلطان — Service Worker v18 (خزنة المندوب بتتقرأ حية وقت كل مزامنة بدل كاش محلي ممكن يبقى قديم)
-const CACHE = 'mandob-sultan-v24';
+const CACHE = 'mandob-sultan-v25';
 const ASSETS = [
   './',
   './index.html',

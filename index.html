@@ -370,7 +370,6 @@ function pinTap(e,v){}
   <div id="pg-ledger"    class="page"></div>
   <div id="pg-goal"      class="page"></div>
   <div id="pg-stores"    class="page"></div>
-  <div id="pg-customers" class="page"></div>
   <div id="pg-vload"     class="page"></div>
   <div id="pg-more"      class="page"></div>
   <div id="pg-van"       class="page"></div>
@@ -379,10 +378,7 @@ function pinTap(e,v){}
   <nav class="nav" style="grid-template-columns:repeat(9,1fr)">
     <button class="nb on"  onclick="go('sell',this)">     <span class="ni">🧾</span><span class="nl">بيع</span></button>
     <button class="nb"     onclick="go('ledger',this)">   <span class="ni">💰</span><span class="nl">كشف</span></button>
-    <button class="nb"     onclick="go('goal',this)">     <span class="ni">🎯</span><span class="nl">الهدف</span></button>
-    <button class="nb"     onclick="go('stores',this)">   <span class="ni">🏪</span><span class="nl">محلات</span></button>
-    <button class="nb"     onclick="go('route',this)">    <span class="ni">🗺️</span><span class="nl">الخط</span></button>
-    <button class="nb"     onclick="go('customers',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
+    <button class="nb" id="nb-stores" onclick="go('stores',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
     <button class="nb" id="nb-vload" onclick="go('vload',this)"><span class="ni">🚛</span><span class="nl">حمّل</span></button>
     <button class="nb"     onclick="go('van',this);r_van()"><span class="ni">🚗</span><span class="nl">سيارة</span></button>
     <button class="nb" id="nb-more" onclick="go('more',this)"><span class="ni">⚙️</span><span class="nl">المزيد</span></button>
@@ -481,9 +477,7 @@ let   CDAY    = null;
 let cart          = LS.g('cart_'+TODAY) || [];
 let activeInvOffer= null;
 let sellLock      = false;
-let CUST_TAB      = 'pending'; // 'pending' | 'collected'
 let STORE_SEARCH_Q= '';
-let CUST_SEARCH_Q = '';
 let PRESET_CUST   = '';   // عميل متحدد من كارت العميل (زرار "بيع" أو "كرر آخر فاتورة") لحد ما الفاتورة تتم
 let ROUTE = LS.g('route') || { templates:{} };
 function saveRoute(){ LS.s('route', ROUTE); }
@@ -1833,8 +1827,10 @@ function go(name,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('on'));
   document.getElementById('pg-'+name).classList.add('on');
+  // صفحات داخلية من غير زرار فى الشريط: الخط تحت "عملاء"، والهدف تحت "المزيد"
+  if(!btn) btn = document.getElementById(name==='route'?'nb-stores':name==='goal'?'nb-more':'');
   if(btn)btn.classList.add('on');
-  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
+  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
 }
 const noop=()=>{};
 
@@ -3029,85 +3025,6 @@ function printInvoice(invoiceId){
 }
 
 
-// ══════════════════════════════════════════════════════════════════
-// CUSTOMERS PAGE
-// ══════════════════════════════════════════════════════════════════
-function r_customers(){
-  const totalDebt=CUSTOMERS.reduce((a,c)=>{
-    const store=STORES.find(s=>s.id===c.id);
-    return a+(c.debt||0)+(store?.oldDebt||0);
-  },0);
-  const collectedTodayIds = new Set((CDAY?.collections||[]).map(c=>c.custId));
-  const withBalance = CUSTOMERS.filter(c=>{
-    const store=STORES.find(s=>s.id===c.id);
-    return (c.debt||0)+(store?.oldDebt||0) > 0;
-  });
-  const pendingCount   = withBalance.filter(c=>!collectedTodayIds.has(c.id)).length;
-  const collectedCount = withBalance.filter(c=>collectedTodayIds.has(c.id)).length;
-
-  document.getElementById('pg-customers').innerHTML=`
-  <div class="g2" style="margin-bottom:12px">
-    <div class="kcard"><div class="kc-val cb">${CUSTOMERS.length}</div><div class="kc-lbl">إجمالي العملاء</div></div>
-    <div class="kcard"><div class="kc-val cr">${fmt(totalDebt)}</div><div class="kc-lbl">إجمالي المديونية ج</div></div>
-  </div>
-  <input class="sbox" placeholder="🔍 ابحث عن عميل..." oninput="filterCustomers(this.value)" id="cust-search" value="${CUST_SEARCH_Q||''}">
-  <div style="display:flex;gap:8px;margin:10px 0">
-    <button class="btn ${CUST_TAB==='pending'?'btn-o':'btn-b'}" style="flex:1;font-size:13px;padding:9px 4px" onclick="switchCustTab('pending')">🔴 عليهم ديون (${pendingCount})</button>
-    <button class="btn ${CUST_TAB==='collected'?'btn-g':'btn-b'}" style="flex:1;font-size:13px;padding:9px 4px" onclick="switchCustTab('collected')">✅ اتحصّل منهم النهاردة (${collectedCount})</button>
-  </div>
-  <div id="cust-list"></div>`;
-  renderCustList();
-}
-
-function switchCustTab(tab){ CUST_TAB=tab; r_customers(); }
-
-function custListSource(){
-  const collectedTodayIds = new Set((CDAY?.collections||[]).map(c=>c.custId));
-  const withBalance = CUSTOMERS.filter(c=>{
-    const store=STORES.find(s=>s.id===c.id);
-    return (c.debt||0)+(store?.oldDebt||0) > 0;
-  });
-  if(CUST_TAB==='collected') return withBalance.filter(c=>collectedTodayIds.has(c.id));
-  const pending = withBalance.filter(c=>!collectedTodayIds.has(c.id));
-  const zero = CUSTOMERS.filter(c=>!withBalance.includes(c));
-  return [...pending, ...zero];
-}
-
-function renderCustList(){
-  let list = custListSource();
-  if(CUST_SEARCH_Q) list = list.filter(c=>c.name.includes(CUST_SEARCH_Q)||c.phone?.includes(CUST_SEARCH_Q));
-  list = [...list].sort((a,b)=>{
-    const da=(b.debt||0)+(STORES.find(s=>s.id===b.id)?.oldDebt||0);
-    const db=(a.debt||0)+(STORES.find(s=>s.id===a.id)?.oldDebt||0);
-    return da-db;
-  });
-  const el=document.getElementById('cust-list'); if(!el) return;
-  el.innerHTML = list.map(cust=>{
-    const store=STORES.find(s=>s.id===cust.id);
-    const totalCustDebt=(cust.debt||0)+(store?.oldDebt||0);
-    const lockBadge = cust.debtLocked ? '<span class="bdg br2" style="margin-right:6px">🔒 آجل مقفول</span>' : '';
-    return `<div class="scard" style="cursor:pointer" onclick="showCustStatement('${cust.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div style="flex:1">
-          <div style="font-size:15px;font-weight:900">${cust.name} ${lockBadge}</div>
-          ${cust.phone?`<div style="font-size:12px;color:var(--blue);margin-top:2px">📞 ${cust.phone}</div>`:''}
-          ${store?.address?`<div style="font-size:12px;color:var(--t3)">📍 ${store.address}</div>`:''}
-        </div>
-        <div style="text-align:center;flex-shrink:0">
-          <div style="font-size:18px;font-weight:900;color:${totalCustDebt>0?'var(--red)':'var(--g)'}">${fmt(totalCustDebt)}</div>
-          <div style="font-size:11px;color:var(--t2)">رصيد ج</div>
-        </div>
-      </div>
-      ${custActionsHtml(cust.id)}
-    </div>`;
-  }).join('')||`<div style="color:var(--t3);text-align:center;padding:20px">${CUST_TAB==='collected'?'مفيش حد اتحصل منه النهاردة لسه':'لا توجد عملاء'}</div>`;
-}
-
-function filterCustomers(q){
-  CUST_SEARCH_Q = q;
-  renderCustList();
-}
-
 // ── أزرار سريعة على كارت العميل: بيع / تحصيل / مرتجع / اتصال / واتساب / خريطة ──
 function custActionsHtml(id){
   const cu=CUSTOMERS.find(c=>c.id===id), st=STORES.find(s=>s.id===id);
@@ -3317,7 +3234,7 @@ function saveCustomerEdit(custId){
     toast('✅ تم حفظ بيانات العميل');
   }
   closeModal();
-  r_customers();
+  r_stores();
 }
 
 
@@ -3609,13 +3526,51 @@ function storeCardHtml(s, i, opts){
   </div>`;
 }
 
+// ══════════════════════════════════════════════════════════════════
+// ── صفحة "عملاء": المحلات والعملاء فى شاشة واحدة، بفلاتر ────────────
+// فلتر: الكل / النهاردة فى الخط / عليهم ديون / لسه ما اتزارش / اتحصّل منهم النهاردة
+// ══════════════════════════════════════════════════════════════════
+const CUST_FILTERS = [
+  ['all','👥 الكل'], ['route','🗺️ النهاردة في الخط'], ['debt','🔴 عليهم ديون'],
+  ['unvisited','⏳ لسه ما اتزارش'], ['collected','✅ اتحصّل النهاردة'],
+];
+let STORE_FILTER = 'all';
+
+// أي عميل مالوش كارت محل (نادر) بنعمله واحد علشان يظهر هنا بنفس الأزرار
+function ensureStoresForCustomers(){
+  let added=false;
+  CUSTOMERS.forEach(c=>{
+    if(!STORES.some(s=>s.id===c.id)){ STORES.push({id:c.id,name:c.name,phone:c.phone||'',address:'',note:'',visits:[],oldDebt:0}); added=true; }
+  });
+  if(added) LS.s('stores',STORES);
+}
+function storeFilterPass(s){
+  const cu=CUSTOMERS.find(c=>c.id===s.id);
+  const bal=(cu?.debt||0)+(s.oldDebt||0);
+  const visitedToday=!!s.visits?.some(v=>v.date===TODAY);
+  switch(STORE_FILTER){
+    case 'route': return getTodayRouteIds().includes(s.id);
+    case 'debt': return bal>0;
+    case 'unvisited': return !visitedToday;
+    case 'collected': return (CDAY?.collections||[]).some(c=>c.custId===s.id);
+    default: return true;
+  }
+}
+function storeFilterCounts(){
+  const keep=STORE_FILTER, out={};
+  CUST_FILTERS.forEach(([k])=>{ STORE_FILTER=k; out[k]=STORES.filter(storeFilterPass).length; });
+  STORE_FILTER=keep; return out;
+}
+
 function r_stores(){
+  ensureStoresForCustomers();
   const today=TODAY;
   const todayVisits=CDAY?.visits||[];
   const visited=todayVisits.length;
   const sold=todayVisits.filter(v=>v.status==='sold').length;
   const rejected=todayVisits.filter(v=>v.status==='reject').length;
   const conv=visited>0?Math.round((sold/visited)*100):0;
+  const totalDebt=STORES.reduce((a,s)=>a+(CUSTOMERS.find(c=>c.id===s.id)?.debt||0)+(s.oldDebt||0),0);
 
   // Reminder — same weekday last week
   const lw=new Date(today); lw.setDate(lw.getDate()-7);
@@ -3625,7 +3580,7 @@ function r_stores(){
 
   const routeBar=visited?`
   <div class="sec" style="margin-bottom:12px">
-    <div class="st">📍 خط السير اليوم</div>
+    <div class="st">📍 زيارات اليوم</div>
     <div class="g4" style="margin-bottom:10px">
       <div class="kcard"><div class="kc-val cb">${visited}</div><div class="kc-lbl">زرت</div></div>
       <div class="kcard"><div class="kc-val cg">${sold}</div><div class="kc-lbl">باعوا</div></div>
@@ -3635,14 +3590,24 @@ function r_stores(){
     <div class="pb"><div class="pf ${conv>=70?'pg-g':conv>=40?'pg-o':'pg-r'}" style="width:${conv}%"></div></div>
   </div>`:'';
 
-  const stHtml=STORES.map((s,i)=>storeCardHtml(s,i)).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا توجد محلات</div>';
+  const cnt=storeFilterCounts();
+  const chips=CUST_FILTERS.map(([k,l])=>`<button class="btn ${STORE_FILTER===k?'btn-blue':'btn-b'}" style="font-size:12px;padding:8px 10px;white-space:nowrap;flex-shrink:0" onclick="setStoreFilter('${k}')">${l} (${cnt[k]})</button>`).join('');
 
   document.getElementById('pg-stores').innerHTML=`
   ${remHtml}${routeBar}
-  <button class="btn btn-blue btn-lg" style="width:100%;margin-bottom:12px" onclick="ROUTE_DAY_VIEW=new Date().getDay();go('route')">🗺️ خط السير (${getTodayRouteIds().length} محل النهاردة)</button>
-  <button class="btn btn-teal btn-lg" style="width:100%;margin-bottom:12px" onclick="manualSyncCustomers()">🔄 مزامنة العملاء من سلطان</button>
-  <div class="sec">
-    <div class="st">➕ إضافة محل / عميل</div>
+  <div class="g2" style="margin-bottom:12px">
+    <div class="kcard"><div class="kc-val cb">${STORES.length}</div><div class="kc-lbl">إجمالي العملاء</div></div>
+    <div class="kcard"><div class="kc-val cr">${fmt(totalDebt)}</div><div class="kc-lbl">إجمالي المديونية ج</div></div>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+    <button class="btn btn-blue btn-lg" style="flex:1" onclick="ROUTE_DAY_VIEW=new Date().getDay();go('route')">🗺️ خط السير (${getTodayRouteIds().length})</button>
+    <button class="btn btn-teal btn-lg" style="flex:1" onclick="manualSyncCustomers()">🔄 مزامنة العملاء</button>
+  </div>
+  <input class="sbox" placeholder="🔍 ابحث بالاسم أو التليفون أو العنوان..." oninput="filterStores(this.value)" id="store-search" value="${STORE_SEARCH_Q||''}">
+  <div style="display:flex;gap:6px;overflow-x:auto;margin:10px 0;padding-bottom:4px">${chips}</div>
+  <div id="store-list"></div>
+  <details class="sec" style="margin-top:12px">
+    <summary class="st" style="cursor:pointer">➕ إضافة محل / عميل جديد</summary>
     <div class="ig"><div class="il">اسم المحل *</div><input type="text" id="new-store" class="ifield" placeholder="اسم المحل أو العميل"></div>
     <div class="ig"><div class="il">رقم التليفون</div><input type="tel" id="new-phone" class="ifield" placeholder="01xxxxxxxxx (اختياري)"></div>
     <div class="ig" style="margin-bottom:10px"><div class="il">العنوان</div><input type="text" id="new-addr" class="ifield" placeholder="العنوان (اختياري)"></div>
@@ -3650,20 +3615,27 @@ function r_stores(){
       <button class="btn btn-g btn-lg" onclick="addStore(false)">إضافة</button>
       <button class="btn btn-blue btn-lg" onclick="addStore(true)">📍 مع GPS</button>
     </div>
-  </div>
-  <input class="sbox" placeholder="🔍 ابحث عن محل..." oninput="filterStores(this.value)" id="store-search" value="${STORE_SEARCH_Q||''}">
-  <div class="sec"><div class="st">🏪 كل المحلات (<span id="store-count">${STORES.length}</span>)</div><div id="store-list">${stHtml}</div></div>`;
-  if(STORE_SEARCH_Q) filterStores(STORE_SEARCH_Q);
+  </details>`;
+  renderStoreList();
 }
 
-function filterStores(q){
-  STORE_SEARCH_Q=q;
+function setStoreFilter(k){ STORE_FILTER=k; r_stores(); }
+
+function renderStoreList(){
   const list=document.getElementById('store-list'); if(!list) return;
-  const idxMap = STORES.map((s,i)=>({s,i}));
-  const filtered = q ? idxMap.filter(({s})=>s.name.includes(q)||s.phone?.includes(q)||s.address?.includes(q)) : idxMap;
-  const cnt=document.getElementById('store-count'); if(cnt) cnt.textContent=filtered.length;
-  list.innerHTML = filtered.map(({s,i})=>storeCardHtml(s,i)).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
+  const q=(STORE_SEARCH_Q||'').trim().toLowerCase();
+  const rows=STORES.map((s,i)=>({s,i})).filter(({s})=>storeFilterPass(s) &&
+    (!q || (s.name||'').toLowerCase().includes(q) || String(s.phone||'').includes(q) || (s.address||'').toLowerCase().includes(q)));
+  // اللي عليهم ديون الأول (الأكبر)، وبعدين الباقي بالاسم
+  rows.sort((a,b)=>{
+    const da=(CUSTOMERS.find(c=>c.id===a.s.id)?.debt||0)+(a.s.oldDebt||0);
+    const db=(CUSTOMERS.find(c=>c.id===b.s.id)?.debt||0)+(b.s.oldDebt||0);
+    return db-da || (a.s.name||'').localeCompare(b.s.name||'','ar');
+  });
+  list.innerHTML = rows.map(({s,i})=>storeCardHtml(s,i)).join('') ||
+    '<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
 }
+function filterStores(q){ STORE_SEARCH_Q=q; renderStoreList(); }
 
 const statusLbl=st=>({sold:'باع',collect:'حصّل',reject:'رفض',closed:'مغلق',pending:'معلق'}[st]||'معلق');
 
@@ -3747,6 +3719,7 @@ function r_route(){
   const addOptionsHtml = otherStores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
 
   document.getElementById('pg-route').innerHTML=`
+  <button class="btn btn-b" style="margin-bottom:10px;font-size:13px" onclick="go('stores')">⬅️ رجوع للعملاء</button>
   <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${dayTabs}</div>
   <div class="al al-teal" style="margin-bottom:12px;font-size:12px">🔒 خط السير بيتحدد من سلطان ERP — تقدر تضيف محل جديد بس، مايتشالش من هنا</div>
   <div class="sec" style="margin-bottom:12px">
@@ -4080,6 +4053,7 @@ async function vlpConfirmLoad(){
 function r_more(){
   const days=Object.keys(DAYS).sort().reverse();
   document.getElementById('pg-more').innerHTML=`
+  <button class="btn btn-gold btn-lg" style="width:100%;margin-bottom:12px" onclick="go('goal')">🎯 الهدف والإنجاز</button>
   <div class="sec">
     <div class="st">📦 مخزون السيارة</div>
     <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — تقدر تحمّل عربيتك بنفسك من تبويب "🚛 حمّل"، أو الأدمن يحمّلهالك من سلطان ERP</div>
