@@ -484,6 +484,7 @@ let sellLock      = false;
 let CUST_TAB      = 'pending'; // 'pending' | 'collected'
 let STORE_SEARCH_Q= '';
 let CUST_SEARCH_Q = '';
+let PRESET_CUST   = '';   // عميل متحدد من كارت العميل (زرار "بيع" أو "كرر آخر فاتورة") لحد ما الفاتورة تتم
 let ROUTE = LS.g('route') || { templates:{} };
 function saveRoute(){ LS.s('route', ROUTE); }
 const WEEKDAY_NAMES=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
@@ -750,6 +751,7 @@ function getPendingPrevSales(){
 function voidPrevInvoiceLines(date, invoiceId, reason){
   const day = DAYS[date];
   if(!day || !day.sales) return 0;
+  if(invHasPartPayment(invoiceId)){ toast('فاتورة '+invoiceId+' فيها دفعة كاش — الإلغاء من البرنامج الرئيسي','err'); return 0; }
   const lines = day.sales.filter(s => s.invoiceId === invoiceId && !s.void);
   let totalVoided = 0;
   lines.forEach(s => {
@@ -1269,6 +1271,14 @@ function isDuplicateRefError(err){
   return !!(err && err.code === '23505' && /ref/i.test(err.message||''));
 }
 
+// ملاحظة الفاتورة: بتتحفظ فى sales.notes بعد إنشاء الفاتورة (الداتابيز بتسمح لصاحب الفاتورة يعدّل الملاحظات
+// بس). لو فشلت ما بنوقفش مزامنة الفاتورة نفسها — الملاحظة مش مالية.
+async function saveSaleNote(saleId, note){
+  try{
+    const { error } = await sb.from('sales').update({ notes: note }).eq('id', saleId);
+    if(error) console.warn('saveSaleNote', error.message);
+  }catch(e){ console.warn('saveSaleNote', e); }
+}
 const SYNC_HANDLERS = {
   sale: async (payload) => {
     const items = payload.items.filter(it => isRealSultanId(it.productId));
@@ -1314,12 +1324,14 @@ const SYNC_HANDLERS = {
         _invoiceIdMap[payload.invoiceId] = existing.id;
         LS.s('invoiceIdMap', _invoiceIdMap);
       }
+      if(existing && payload.note) await saveSaleNote(existing.id, payload.note);
       return;
     }
     if(data && data[0] && payload.invoiceId){
       _invoiceIdMap[payload.invoiceId] = data[0].id;
       LS.s('invoiceIdMap', _invoiceIdMap);
     }
+    if(data && data[0] && payload.note) await saveSaleNote(data[0].id, payload.note);
   },
 
   // إلغاء فاتورة اتزامنت بالفعل — بيستخدم نفس مسار الإلغاء اللي شاشة
@@ -2076,7 +2088,12 @@ function sellUpdateBar(){
   const bar=document.getElementById('sell-bar'); if(!bar) return;
   const cartT = cart.reduce((a,c)=>{const r=cprice(c.prodId,c.qty);return a+r.total;},0);
   const cartN = cart.length;
-  bar.innerHTML = cartN ? `
+  const pcu = PRESET_CUST ? CUSTOMERS.find(c=>c.id===PRESET_CUST) : null;
+  const presetHtml = pcu ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--blue);border-radius:13px;padding:9px 13px;margin-bottom:10px;font-size:13.5px">
+      <span>👤 الفاتورة على: <b>${vlpEsc(pcu.name)}</b></span>
+      <span style="display:flex;gap:6px"><button class="btn btn-b" style="font-size:12px;padding:6px 10px" onclick="repeatLastInvoice('${pcu.id}')">🔁 كرر آخر فاتورة</button><button class="btn btn-r" style="font-size:12px;padding:6px 10px" onclick="PRESET_CUST='';sellUpdateBar()">✕</button></span>
+    </div>` : '';
+  bar.innerHTML = presetHtml + (cartN ? `
   <div class="cart-bar">
     <div>
       <div style="font-size:20px;font-weight:900;color:var(--g)">${fmt(cartT)} ج</div>
@@ -2087,7 +2104,7 @@ function sellUpdateBar(){
       <button class="btn btn-g" style="padding:9px 18px;font-size:15px;font-weight:900;border-radius:13px" onclick="openCheckout()">دفع ✓</button>
     </div>
   </div>` :
-  `<div style="background:var(--bg3);border-radius:13px;padding:13px;text-align:center;color:var(--t3);font-size:14px;margin-bottom:12px;border:1px dashed var(--bdr)">اضغط على أي صنف لإضافته للسلة 👇</div>`;
+  `<div style="background:var(--bg3);border-radius:13px;padding:13px;text-align:center;color:var(--t3);font-size:14px;margin-bottom:12px;border:1px dashed var(--bdr)">اضغط على أي صنف لإضافته للسلة 👇</div>`);
 }
 
 function sellUpdateRow(pid){
@@ -2119,7 +2136,7 @@ function adjC(pid,d){
   const ci=cart.find(c=>c.prodId===pid); if(!ci) return;
   sellSetQty(pid, ci.qty+d);
 }
-function clearCart(){ cart=[]; activeInvOffer=null; saveCart(); sellRenderList(); sellUpdateBar(); }
+function clearCart(){ cart=[]; activeInvOffer=null; PRESET_CUST=''; saveCart(); sellRenderList(); sellUpdateBar(); }
 
 function filterSell(q){ sellRenderList(); }
 
@@ -2277,17 +2294,42 @@ function openCheckout(){
       <input type="text" id="new-cust-n" class="ifield" placeholder="اسم العميل *" style="margin-bottom:6px">
       <input type="tel" id="new-cust-phone" class="ifield" placeholder="رقم التليفون (اختياري)">
     </div>
+    <div id="ck-credit"></div>
+    <div id="ck-paid-row" class="ig" style="display:none">
+      <div class="il">💵 مدفوع كاش الآن <span style="color:var(--t3);font-size:12px">(للآجل بس — اختياري، الباقي يتسجل آجل)</span></div>
+      <input type="number" inputmode="decimal" min="0" id="ck-paid" class="ifield" placeholder="0">
+    </div>
+    <div class="ig">
+      <input type="text" id="ck-note" class="ifield" maxlength="200" placeholder="📝 ملاحظة على الفاتورة (اختياري)">
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <button id="btn-cash" class="btn btn-g btn-xl" onclick="doSell(false)">نقدي 💵</button>
       <button id="btn-debt" class="btn btn-gold btn-xl" onclick="doSell(true)">آجل 📋</button>
     </div>`);
   window._checkoutBase=base; window._checkoutDisc=disc;
+  if(PRESET_CUST && CUSTOMERS.some(c=>c.id===PRESET_CUST)) cpkPick('ck-cust', PRESET_CUST);   // اختار العميل من الكارت
+}
+// رصيد العميل والحد الائتماني تحت اختيار العميل، وخانة "مدفوع كاش" بتظهر لما يكون فيه عميل
+function ckUpdateCustInfo(v){
+  const info=document.getElementById('ck-credit'), paidRow=document.getElementById('ck-paid-row');
+  if(paidRow) paidRow.style.display = v ? 'block' : 'none';
+  if(!info) return;
+  const cu = (v && v!=='_new') ? CUSTOMERS.find(x=>x.id===v) : null;
+  if(!cu){ info.innerHTML=''; return; }
+  const bal=custBalanceOf(cu), limit=cu.creditLimit||0;
+  let h=`رصيده الحالي: <b>${fmt(bal)} ج</b>`;
+  if(limit>0){
+    const left=limit-bal;
+    h+=` — الحد الائتماني ${fmt(limit)} ج — المتبقي <b style="color:${left>0?'var(--g)':'var(--red)'}">${fmt(Math.max(0,left))} ج</b>`;
+  }
+  info.innerHTML=`<div style="font-size:12.5px;color:var(--t2);background:var(--bg3);border-radius:10px;padding:8px 11px;margin:-4px 0 10px">${h}</div>`;
 }
 function togInvOff(id){ activeInvOffer=activeInvOffer===id?null:id; openCheckout(); }
 async function onCustSel(){
   const v=document.getElementById('ck-cust')?.value;
   document.getElementById('new-cust-row').style.display=v==='_new'?'block':'none';
   _checkoutCustId = v;
+  ckUpdateCustInfo(v);
   // قفل زراير الدفع أثناء جلب سعر مستوى العميل (لو محتاج) عشان محدش يدفع
   // بسعر قديم فى نص اللحظة اللي بتاخدها المكالمة
   const btnC=document.getElementById('btn-cash'), btnD=document.getElementById('btn-debt');
@@ -2324,6 +2366,21 @@ function doSell(isDebt){
       if(inp){ inp.style.borderColor='var(--red)'; inp.focus(); setTimeout(()=>inp.style.borderColor='',2000); }
       toast('⚠️ اكتب اسم العميل الجديد','err');
       return;
+    }
+
+    // ── المدفوع كاش لازم يكون أقل من إجمالي الفاتورة (غير كده يبقى نقدي) ──
+    const totalNow=(window._checkoutBase||0)-(window._checkoutDisc||0);
+    const paidNow=parseFloat(document.getElementById('ck-paid')?.value)||0;
+    if(paidNow<0){ toast('المبلغ المدفوع غلط','err'); return; }
+    if(paidNow>0 && paidNow>=totalNow){ toast('المدفوع بقى كل الفاتورة — اضغط "نقدي" بدل آجل','err'); return; }
+
+    // ── تنبيه الحد الائتماني (تحذير بس — اللي مقفول آجله ليه خطوة تصريح تحت) ──
+    if(custSel && custSel!=='_new'){
+      const cu0=CUSTOMERS.find(x=>x.id===custSel);
+      if(cu0 && !cu0.debtLocked && cu0.creditLimit>0){
+        const over=custBalanceOf(cu0)+(totalNow-paidNow)-cu0.creditLimit;
+        if(over>0 && !confirm(`⚠️ الفاتورة دي هتخلّي ${cu0.name} يعدّي حده الائتماني بـ ${fmt(over)} ج.\nتكمّل آجل برضه؟`)) return;
+      }
     }
 
     // ── قفل بيع الآجل لعملاء معينين ───────────────────────────────
@@ -2378,6 +2435,10 @@ function executeSell(isDebt){
     if(c.qty+gq>p.qty){ toast(`الكمية أكثر من المتاح: ${p.name} — أعد فتح السلة وتأكد من الكمية`,'err'); sellLock=false; return; }
   }
 
+  // دفعة كاش مع فاتورة آجل + ملاحظة الفاتورة
+  const invNote=(document.getElementById('ck-note')?.value||'').trim().slice(0,200);
+  const paid=(isDebt && custId) ? Math.max(0, Math.min(parseFloat(document.getElementById('ck-paid')?.value)||0, (window._checkoutBase||0)-(window._checkoutDisc||0))) : 0;
+
   let billT=0;
   const syncItems=[];
   cart.forEach(c=>{
@@ -2387,7 +2448,7 @@ function executeSell(isDebt){
     p.qty-=c.qty+gq;
     billT+=total;
     if(isDebt&&custId){const cu=CUSTOMERS.find(x=>x.id===custId);if(cu)cu.debt=(cu.debt||0)+total;}
-    CDAY.sales.push({id:uid(),prodId:p.id,name:p.name,emoji:p.emoji,qty:c.qty,giftQty:gq,unit,total,custName,custId,debt:isDebt,ts:Date.now(),invoiceId,void:false});
+    CDAY.sales.push({id:uid(),prodId:p.id,name:p.name,emoji:p.emoji,qty:c.qty,giftQty:gq,unit,total,custName,custId,debt:isDebt,ts:Date.now(),invoiceId,void:false,paidNow:paid||undefined,note:invNote||undefined});
     syncItems.push({productId:p.id, qty:c.qty, unitPrice:unit, lineTotal:total, freeQty:gq, costPrice:Number(p.cost)||0});
   });
 
@@ -2409,8 +2470,18 @@ function executeSell(isDebt){
       : (CUSTOMERS.find(x=>x.id===custId)?.phone||'');
     queueSync('sale', {
       invoiceId, custId: custId||null, custName, custPhone, isDebt,
-      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(),
+      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(), note: invNote,
     });
+  }
+  // الدفعة الكاش: تحصيل عادي من العميل (بينزل من رصيده وبيدخل خزنة المندوب) بعد الفاتورة فى الطابور
+  if(paid>0){
+    const cuP=CUSTOMERS.find(x=>x.id===custId);
+    if(cuP){ cuP.debt=Math.max(0,(cuP.debt||0)-paid); LS.s('customers',CUSTOMERS); }
+    const colTs=Date.now()+1;
+    CDAY.collections.push({id:uid(),custName,custId,amt:paid,ts:colTs,invoiceId,note:'دفعة مع الفاتورة'});
+    saveDay();
+    if(REP) queueSync('collection', {custId, custName, amt:paid, ts:colTs});
+    tgCollect(custName||'عميل', paid);
   }
   // Telegram notification
   const saleLines = cart.map(c=>{
@@ -2419,9 +2490,9 @@ function executeSell(isDebt){
     return {emoji:p?.emoji||'📦',name:p?.name||'',qty:c.qty,total};
   });
   tgSale(saleLines, custName, finalT, isDebt, invoiceId, custId);
-  activeInvOffer=null; cart=[]; saveCart();
+  activeInvOffer=null; cart=[]; saveCart(); PRESET_CUST=''; if(custId) delete _csCache[custId];
   closeModal();
-  toast(`✅ فاتورة ${fmt(finalT)} ج — ${isDebt?'آجل':'نقدي'}`);
+  toast(`✅ فاتورة ${fmt(finalT)} ج — ${isDebt?(paid>0?`آجل (مدفوع ${fmt(paid)})`:'آجل'):'نقدي'}`);
   r_sell();
   if(document.getElementById('pg-van')?.classList.contains('on')) r_van();
   sellLock=false;
@@ -2646,6 +2717,7 @@ function showVoidList(){
 }
 
 function showSoftDeleteInvoice(invId){
+  if(invHasPartPayment(invId)){ toast('الفاتورة دي فيها دفعة كاش اتسجلت معاها — الإلغاء من البرنامج الرئيسي','err'); return; }
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div style="font-size:16px;font-weight:900;color:var(--red)">🚫 إلغاء فاتورة</div>
@@ -2762,7 +2834,14 @@ async function reconcileCancelledInvoices(){
   }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني المرة الجاية */ }
 }
 
+// فاتورة آجل اتدفع جزء منها كاش وقت البيع: التحصيل متسجل منفصل، فإلغاء/تعديل الفاتورة هنا
+// هيسيب الدفعة من غير فاتورة. فبنمنعه من التطبيق ويتعمل من البرنامج الرئيسي.
+function invHasPartPayment(invId){
+  const all=[...(CDAY?.sales||[]), ...Object.values(DAYS).flatMap(d=>d.sales||[])];
+  return all.some(s=>s.invoiceId===invId && s.paidNow>0);
+}
 function showEditInvoice(invId){
+  if(invHasPartPayment(invId)){ toast('الفاتورة دي فيها دفعة كاش اتسجلت معاها — التعديل من البرنامج الرئيسي','err'); return; }
   const invLines=(CDAY?.sales||[]).filter(s=>s.invoiceId===invId&&!s.void&&s.qty>0);
   if(!invLines.length){toast('لا توجد بنود قابلة للتعديل','err');return;}
   const invTs=invLines[0].ts;
@@ -3006,8 +3085,6 @@ function renderCustList(){
   el.innerHTML = list.map(cust=>{
     const store=STORES.find(s=>s.id===cust.id);
     const totalCustDebt=(cust.debt||0)+(store?.oldDebt||0);
-    const allSales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===cust.id&&!s.void&&s.total>0);
-    const totalBought=allSales.reduce((a,s)=>a+s.total,0);
     const lockBadge = cust.debtLocked ? '<span class="bdg br2" style="margin-right:6px">🔒 آجل مقفول</span>' : '';
     return `<div class="scard" style="cursor:pointer" onclick="showCustStatement('${cust.id}')">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -3015,13 +3092,13 @@ function renderCustList(){
           <div style="font-size:15px;font-weight:900">${cust.name} ${lockBadge}</div>
           ${cust.phone?`<div style="font-size:12px;color:var(--blue);margin-top:2px">📞 ${cust.phone}</div>`:''}
           ${store?.address?`<div style="font-size:12px;color:var(--t3)">📍 ${store.address}</div>`:''}
-          <div style="font-size:12px;color:var(--t2);margin-top:3px">إجمالي المشتريات: ${fmt(totalBought)} ج</div>
         </div>
         <div style="text-align:center;flex-shrink:0">
           <div style="font-size:18px;font-weight:900;color:${totalCustDebt>0?'var(--red)':'var(--g)'}">${fmt(totalCustDebt)}</div>
           <div style="font-size:11px;color:var(--t2)">رصيد ج</div>
         </div>
       </div>
+      ${custActionsHtml(cust.id)}
     </div>`;
   }).join('')||`<div style="color:var(--t3);text-align:center;padding:20px">${CUST_TAB==='collected'?'مفيش حد اتحصل منه النهاردة لسه':'لا توجد عملاء'}</div>`;
 }
@@ -3031,52 +3108,159 @@ function filterCustomers(q){
   renderCustList();
 }
 
+// ── أزرار سريعة على كارت العميل: بيع / تحصيل / مرتجع / اتصال / واتساب / خريطة ──
+function custActionsHtml(id){
+  const cu=CUSTOMERS.find(c=>c.id===id), st=STORES.find(s=>s.id===id);
+  const phone=String(cu?.phone||st?.phone||'').trim();
+  const wa=phone?'https://wa.me/2'+phone.replace(/\D/g,'').replace(/^0/,''):'';
+  const b='font-size:12px;padding:8px 2px;flex:1;min-width:0;text-align:center;text-decoration:none';
+  return `<div style="display:flex;gap:5px;margin:8px 0" onclick="event.stopPropagation()">
+    <button class="btn btn-g" style="${b}" onclick="custGoSell('${id}')">🛒 بيع</button>
+    <button class="btn btn-teal" style="${b}" onclick="custGoCollect('${id}')">💰 تحصيل</button>
+    <button class="btn btn-b" style="${b}" onclick="custGoReturn('${id}')">↩️ مرتجع</button>
+    ${phone?`<a class="btn btn-b" style="${b}" href="tel:${phone}">📞</a><button class="btn btn-b" style="${b}" onclick="window.open('${wa}','_blank')">📲</button>`:''}
+    ${st?.lat?`<button class="btn btn-blue" style="${b}" onclick="openMaps(${st.lat},${st.lng})">🗺️</button>`:''}
+  </div>`;
+}
+function custGoSell(id){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  closeModal();
+  PRESET_CUST=id;
+  if(cart.length){ openCheckout(); return; }
+  go('sell', document.querySelectorAll('.nb')[0]);
+  toast('اختار الأصناف وبعدين ادفع — العميل متحدد');
+}
+function custGoCollect(id){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  const c=CUSTOMERS.find(x=>x.id===id);
+  if(!c || custBalanceOf(c)<=0){ toast('مفيش رصيد على العميل ده','err'); return; }
+  closeModal();
+  go('ledger', document.querySelectorAll('.nb')[1]);
+  cpkPick('col-cust', id);
+  const amt=document.getElementById('col-amt');
+  if(amt){ amt.scrollIntoView({block:'center'}); amt.focus(); }
+}
+function custGoReturn(id){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  closeModal();
+  showCustomerReturn();
+  cpkPick('cr-cust', id);
+}
+
+// ── كشف حساب العميل: من سيرفر سلطان (فواتير + تحصيلات)، مش من سجل التليفون ──
+const _csCache = {};   // custId -> { invoices, top }
 function showCustStatement(custId){
   const cust=CUSTOMERS.find(c=>c.id===custId);
-  const store=STORES.find(s=>s.id===custId);
   if(!cust) return;
-  const allSales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===custId&&!s.void&&s.total>0);
-  const allCollect=Object.values(DAYS).flatMap(d=>d.collections||[]).filter(c=>c.custId===custId);
-  const totalBought=allSales.reduce((a,s)=>a+s.total,0);
-  const totalCollected=allCollect.reduce((a,c)=>a+c.amt,0);
-  const newDebt=cust.debt||0;
-  const oldDebt=store?.oldDebt||0;
-  const totalDebt=newDebt+oldDebt;
-
-  const salesRows=allSales.sort((a,b)=>b.ts-a.ts).slice(0,20).map(s=>`
-    <div class="row">
-      <span class="rl" style="font-size:13px">${s.emoji||'📦'} ${s.name} ×${s.qty} — ${new Date(s.ts).toLocaleDateString('ar-EG')}</span>
-      <span class="rv cg" style="font-size:13px">${fmt(s.total)} ج</span>
-    </div>`).join('');
-
-  const collectRows=allCollect.sort((a,b)=>b.ts-a.ts).slice(0,10).map(c=>`
-    <div class="row">
-      <span class="rl" style="font-size:13px">💰 تحصيل — ${new Date(c.ts).toLocaleDateString('ar-EG')}</span>
-      <span class="rv ct" style="font-size:13px">${fmt(c.amt)} ج</span>
-    </div>`).join('');
-
+  const store=STORES.find(s=>s.id===custId);
+  const bal=custBalanceOf(cust);
   openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">${cust.name}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="font-size:16px;font-weight:900">${vlpEsc(cust.name)}</div>
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
-    ${cust.phone?`<div style="margin-bottom:8px"><a href="tel:${cust.phone}" style="color:var(--blue);font-size:14px">📞 ${cust.phone}</a>
-    <button onclick="window.open('https://wa.me/2${cust.phone.replace(/^0/,'')}','_blank')" class="btn btn-g" style="margin-right:8px;font-size:12px;padding:6px 12px">📲 واتساب</button></div>`:''}
-    ${store?.address?`<div style="font-size:13px;color:var(--t3);margin-bottom:10px">📍 ${store.address}</div>`:''}
-    <div class="g3" style="margin-bottom:12px">
-      <div class="kcard"><div class="kc-val cg">${fmt(totalBought)}</div><div class="kc-lbl">مشتريات ج</div></div>
-      <div class="kcard"><div class="kc-val ct">${fmt(totalCollected)}</div><div class="kc-lbl">محصّل ج</div></div>
-      <div class="kcard"><div class="kc-val ${totalDebt>0?'cr':'cg'}">${fmt(totalDebt)}</div><div class="kc-lbl">رصيد ج</div></div>
+    ${store?.address?`<div style="font-size:13px;color:var(--t3);margin-bottom:6px">📍 ${vlpEsc(store.address)}</div>`:''}
+    ${custActionsHtml(custId)}
+    <div class="g2" style="margin-bottom:12px">
+      <div class="kcard"><div class="kc-val ${bal>0?'cr':'cg'}">${fmt(bal)}</div><div class="kc-lbl">الرصيد ج</div></div>
+      <div class="kcard"><div class="kc-val cb">${cust.creditLimit>0?fmt(cust.creditLimit):'—'}</div><div class="kc-lbl">الحد الائتماني ج</div></div>
     </div>
-    <div class="sec" style="margin-bottom:10px">
-      <div class="st">آخر المشتريات</div>
-      ${salesRows||'<div style="color:var(--t3);text-align:center;padding:10px">لا مشتريات</div>'}
-    </div>
-    ${collectRows?`<div class="sec"><div class="st">التحصيلات</div>${collectRows}</div>`:''}
-    <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-teal btn-xl" style="flex:1" onclick="closeModal();document.querySelectorAll('.nb')[1].click()">💰 تسجيل تحصيل</button>
-      <button class="btn btn-b btn-xl" style="flex:1" onclick="editCustomer('${custId}')">✏️ تعديل بيانات</button>
-    </div>`);
+    <div id="cs-body"><div style="text-align:center;color:var(--t3);padding:18px;font-size:13px">⏳ بجيب الكشف من البرنامج الرئيسي...</div></div>
+    <button class="btn btn-b btn-xl" style="width:100%;margin-top:10px" onclick="editCustomer('${custId}')">✏️ تعديل بيانات</button>`);
+  csLoad(custId);
+}
+async function csLoad(custId){
+  const body=()=>document.getElementById('cs-body');
+  if(!REP || !isRealSultanId(custId) || !navigator.onLine){
+    if(body()) body().innerHTML=`<div class="al al-o" style="font-size:12.5px">${!navigator.onLine?'مفيش نت — ':''}الكشف الكامل بيظهر لما تتصل بالنت ويكون العميل متزامن من سلطان.</div>`+csLocalHtml(custId);
+    return;
+  }
+  try{
+    const [inv, pay] = await Promise.all([
+      sb.from('sales').select('id,invoice_no,created_at,total,payment_type,notes,sale_items(product_id,qty,free_qty,line_total,products(name))')
+        .eq('customer_id', custId).eq('status','confirmed').order('created_at',{ascending:false}).limit(25),
+      sb.from('customer_payments').select('id,amount,created_at,ref').eq('customer_id', custId).eq('status','confirmed').order('created_at',{ascending:false}).limit(15),
+    ]);
+    if(inv.error) throw inv.error;
+    if(pay.error) throw pay.error;
+    // الأكتر شراءً: عدد مرات ظهور كل صنف فى آخر الفواتير دي
+    const tally={};
+    (inv.data||[]).forEach(s=>(s.sale_items||[]).forEach(it=>{
+      const k=it.product_id; tally[k]=tally[k]||{pid:k,name:it.products?.name||'',qty:0,n:0};
+      tally[k].qty+=Number(it.qty)||0; tally[k].n++;
+    }));
+    const top=Object.values(tally).sort((a,b)=>b.n-a.n||b.qty-a.qty).slice(0,5);
+    _csCache[custId]={invoices:inv.data||[], top};
+    const rows=[
+      ...(inv.data||[]).map(s=>({t:'inv',ts:new Date(s.created_at).getTime(),s})),
+      ...(pay.data||[]).map(p=>({t:'pay',ts:new Date(p.created_at).getTime(),p})),
+    ].sort((a,b)=>b.ts-a.ts);
+    const el=body(); if(!el) return;
+    const last=(inv.data||[])[0];
+    el.innerHTML=`
+      ${last?`<button class="btn btn-g btn-xl" style="width:100%;margin-bottom:10px" onclick="repeatLastInvoice('${custId}')">🔁 كرر آخر فاتورة (${fmt(last.total)} ج — ${new Date(last.created_at).toLocaleDateString('ar-EG')})</button>`:''}
+      ${top.length?`<div class="sec" style="margin-bottom:10px"><div class="st">⭐ الأكتر شراءً</div><div style="display:flex;flex-wrap:wrap;gap:6px">${top.map(t=>`<span class="vchip">${vlpEsc(t.name)}</span>`).join('')}</div></div>`:''}
+      <div class="sec"><div class="st">📒 الحركات (من سلطان)</div>
+        ${rows.map(r=>r.t==='inv'?csInvRow(r.s):csPayRow(r.p)).join('')||'<div style="color:var(--t3);text-align:center;padding:12px">لا توجد حركات</div>'}
+      </div>`;
+  }catch(e){
+    console.warn('csLoad',e);
+    if(body()) body().innerHTML=`<div class="al al-r" style="font-size:12.5px">تعذّر تحميل الكشف من سلطان — اتأكد من النت وحاول تاني.</div>`+csLocalHtml(custId);
+  }
+}
+function csInvRow(s){
+  const items=(s.sale_items||[]).map(it=>`${vlpEsc(it.products?.name||'')} ×${fmt(it.qty)}`).join(' | ');
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--bdr)">
+    <div style="display:flex;justify-content:space-between;gap:8px"><span style="font-size:13px;font-weight:700">🧾 ${vlpEsc(s.invoice_no||'')} <span class="bdg ${s.payment_type==='credit'?'br2':'bs'}">${s.payment_type==='credit'?'آجل':'نقدي'}</span></span><span class="cg" style="font-size:13px;font-weight:700">${fmt(s.total)} ج</span></div>
+    <div style="font-size:11.5px;color:var(--t3)">${new Date(s.created_at).toLocaleDateString('ar-EG')}</div>
+    ${items?`<div style="font-size:12px;color:var(--t2);margin-top:3px">${items}</div>`:''}
+    ${s.notes?`<div style="font-size:12px;color:var(--gold);margin-top:3px">📝 ${vlpEsc(s.notes)}</div>`:''}
+  </div>`;
+}
+function csPayRow(p){
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;gap:8px">
+    <span style="font-size:13px">💰 تحصيل <span style="font-size:11.5px;color:var(--t3)">${new Date(p.created_at).toLocaleDateString('ar-EG')}</span></span>
+    <span class="ct" style="font-size:13px;font-weight:700">${fmt(p.amount)} ج</span></div>`;
+}
+// لو مفيش نت: آخر أسبوع من سجل التليفون
+function csLocalHtml(custId){
+  const sales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===custId&&!s.void&&s.total>0).sort((a,b)=>b.ts-a.ts).slice(0,20);
+  const cols=Object.values(DAYS).flatMap(d=>d.collections||[]).filter(c=>c.custId===custId).sort((a,b)=>b.ts-a.ts).slice(0,10);
+  if(!sales.length && !cols.length) return '';
+  return `<div class="sec" style="margin-top:8px"><div class="st">📱 آخر أسبوع على التليفون</div>
+    ${sales.map(s=>`<div class="row"><span class="rl" style="font-size:13px">${s.emoji||'📦'} ${vlpEsc(s.name)} ×${s.qty} — ${new Date(s.ts).toLocaleDateString('ar-EG')}</span><span class="rv cg" style="font-size:13px">${fmt(s.total)} ج</span></div>`).join('')}
+    ${cols.map(c=>`<div class="row"><span class="rl" style="font-size:13px">💰 تحصيل — ${new Date(c.ts).toLocaleDateString('ar-EG')}</span><span class="rv ct" style="font-size:13px">${fmt(c.amt)} ج</span></div>`).join('')}
+  </div>`;
+}
+
+// ── كرر آخر فاتورة: بيحط أصناف آخر فاتورة للعميل فى السلة (على قد المتاح فى العربية) ──
+async function repeatLastInvoice(custId){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  let data=_csCache[custId];
+  if(!data){
+    if(!REP || !isRealSultanId(custId) || !navigator.onLine){ toast('محتاج نت والعميل متزامن من سلطان','err'); return; }
+    const { data:inv, error } = await sb.from('sales').select('id,total,created_at,sale_items(product_id,qty,products(name))')
+      .eq('customer_id', custId).eq('status','confirmed').order('created_at',{ascending:false}).limit(1);
+    if(error){ toast('تعذّر جلب آخر فاتورة','err'); return; }
+    data={invoices:inv||[]};
+  }
+  const last=(data.invoices||[])[0];
+  if(!last || !(last.sale_items||[]).length){ toast('مفيش فاتورة سابقة للعميل ده','err'); return; }
+  if(cart.length && !confirm('السلة فيها أصناف — تستبدلها بآخر فاتورة العميل؟')) return;
+  cart=[]; const skipped=[];
+  last.sale_items.forEach(it=>{
+    const p=vanFind(it.product_id);
+    const want=Number(it.qty)||0;
+    if(!p || p.qty<=0){ skipped.push(it.products?.name||'صنف'); return; }
+    const q=Math.min(want,p.qty);
+    cart.push({prodId:p.id,qty:q});
+    if(q<want) skipped.push((it.products?.name||'صنف')+' (المتاح '+fmt(p.qty)+' بس)');
+  });
+  saveCart();
+  PRESET_CUST=custId;
+  closeModal();
+  go('sell', document.querySelectorAll('.nb')[0]);
+  toast(skipped.length?`اتحطت الأصناف — ناقص: ${skipped.join('، ')}`:'✅ اتحطت أصناف آخر فاتورة', skipped.length?'err':undefined);
 }
 
 function editCustomer(custId){
@@ -3416,7 +3600,7 @@ function storeCardHtml(s, i, opts){
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
       ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
     </div>
-    ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
+    ${custActionsHtml(s.id)}
     <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
     <div style="display:flex;gap:6px">
       <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustStatement('${s.id}')">كشف حساب</button>
