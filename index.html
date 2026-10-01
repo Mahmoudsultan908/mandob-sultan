@@ -1160,10 +1160,9 @@ function queueSync(kind, payload){
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isRealSultanId(id){ return !!id && UUID_RE.test(id); }
 
-// اسم الأصناف المحلية القديمة (اختصار) → الاسم الحقيقي فى expense_categories
+// بنود المصروفات في تطبيق المندوب → نفس البند في expense_categories (سلطان ERP). بقى بنزين وصيانة بس.
 const EXP_CAT_MAP = {
-  'بنزين':'بنزين', 'أكل':'أكل', 'شاي':'شاي',
-  'مصروف طريق':'مصروف طريق', 'تحميل':'تحميل ميداني', 'أخرى':'مصروفات ميدانية أخرى',
+  'بنزين':'بنزين', 'صيانة':'صيانة',
 };
 let _expCatCache = null;
 async function resolveExpenseCategoryId(localCat){
@@ -2495,9 +2494,7 @@ function r_ledger(){
   <div class="sec">
     <div class="st">🛒 مصروف</div>
     <select id="exp-cat" class="ifield" style="margin-bottom:8px">
-      <option value="بنزين">⛽ بنزين</option><option value="أكل">🍔 أكل</option>
-      <option value="شاي">☕ شاي</option><option value="مصروف طريق">🛣️ مصروف طريق</option>
-      <option value="تحميل">🔧 تحميل</option><option value="أخرى">📝 أخرى</option>
+      <option value="بنزين">⛽ بنزين</option><option value="صيانة">🔧 صيانة</option>
     </select>
     <div class="ig"><div class="il">المبلغ</div><input type="number" id="exp-amt" class="ifield" placeholder="0"></div>
     <div class="ig" style="margin-bottom:10px"><div class="il">ملاحظة</div><input type="text" id="exp-note" class="ifield" placeholder="اختياري"></div>
