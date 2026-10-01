@@ -927,8 +927,8 @@ async function checkRepSession(){
     await sb.auth.signOut();
     return false;
   }
-  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', profile.id).maybeSingle();
-  REP = { id: profile.id, name: profile.name || profile.email, treasuryId: repRow?.treasury_id||null, priceLevelCode: repRow?.price_levels?.code||null };
+  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target, commission_pct').eq('id', profile.id).maybeSingle();
+  REP = { id: profile.id, name: profile.name || profile.email, treasuryId: repRow?.treasury_id||null, priceLevelCode: repRow?.price_levels?.code||null, commissionPct: Number(repRow?.commission_pct)||0 };
   LS.s('rep', REP);
   if(repRow){
     GOAL.target = Number(repRow.daily_sales_target)||0;
@@ -944,7 +944,7 @@ async function checkRepSession(){
 // نداءها فى checkRepSession لسبب إضافتها
 async function refreshRepConfig(repId){
   try{
-    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', repId).maybeSingle();
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target, commission_pct').eq('id', repId).maybeSingle();
     if(!repRow) return;
     let changed=false;
     const newTreasuryId = repRow.treasury_id||null;
@@ -1267,11 +1267,16 @@ function isDuplicateRefError(err){
 
 // ملاحظة الفاتورة: بتتحفظ فى sales.notes بعد إنشاء الفاتورة (الداتابيز بتسمح لصاحب الفاتورة يعدّل الملاحظات
 // بس). لو فشلت ما بنوقفش مزامنة الفاتورة نفسها — الملاحظة مش مالية.
-async function saveSaleNote(saleId, note){
+// وميعاد السداد: الداتابيز بتحسبه تلقائي (يوم الفاتورة + ٧) لو فاضي، فبنكتبه بس لو المندوب اختار غير ٧.
+async function saveSaleExtras(saleId, payload){
+  const upd = {};
+  if(payload.note) upd.notes = payload.note;
+  if(payload.isDebt && payload.dueDays && payload.dueDays!==7) upd.due_date = dueDateStr(payload.ts||Date.now(), payload.dueDays);
+  if(!Object.keys(upd).length) return;
   try{
-    const { error } = await sb.from('sales').update({ notes: note }).eq('id', saleId);
-    if(error) console.warn('saveSaleNote', error.message);
-  }catch(e){ console.warn('saveSaleNote', e); }
+    const { error } = await sb.from('sales').update(upd).eq('id', saleId);
+    if(error) console.warn('saveSaleExtras', error.message);
+  }catch(e){ console.warn('saveSaleExtras', e); }
 }
 const SYNC_HANDLERS = {
   sale: async (payload) => {
@@ -1318,14 +1323,14 @@ const SYNC_HANDLERS = {
         _invoiceIdMap[payload.invoiceId] = existing.id;
         LS.s('invoiceIdMap', _invoiceIdMap);
       }
-      if(existing && payload.note) await saveSaleNote(existing.id, payload.note);
+      if(existing) await saveSaleExtras(existing.id, payload);
       return;
     }
     if(data && data[0] && payload.invoiceId){
       _invoiceIdMap[payload.invoiceId] = data[0].id;
       LS.s('invoiceIdMap', _invoiceIdMap);
     }
-    if(data && data[0] && payload.note) await saveSaleNote(data[0].id, payload.note);
+    if(data && data[0]) await saveSaleExtras(data[0].id, payload);
   },
 
   // إلغاء فاتورة اتزامنت بالفعل — بيستخدم نفس مسار الإلغاء اللي شاشة
@@ -1578,7 +1583,7 @@ async function verifyRepStillActive(userId){
       return;
     }
     const freshName = profile.name || profile.email;
-    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', userId).maybeSingle();
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target, commission_pct').eq('id', userId).maybeSingle();
     const freshTreas = repRow?.treasury_id||null, freshLevel = repRow?.price_levels?.code||null;
     if(freshName!==REP.name || freshTreas!==REP.treasuryId || freshLevel!==REP.priceLevelCode){
       REP.name=freshName; REP.treasuryId=freshTreas; REP.priceLevelCode=freshLevel;
@@ -2032,6 +2037,7 @@ function r_sell(){
   // الصفحة بتتبني مرة واحدة؛ بعد كده الضغط على صنف بيحدّث الصف والشريط بس (من غير ما القايمة
   // تتبني من جديد): القايمة ما بتقفزش، البحث ما بيتمسحش، والكيبورد ما بيقفلش.
   pg.innerHTML=`
+  ${sellSummaryHtml()}
   <div id="sell-bar"></div>
   <div class="sec">
     <div class="st">🛒 أصناف اليوم (${prods.length})
@@ -2045,6 +2051,22 @@ function r_sell(){
   </div>`;
   sellRenderList();
   sellUpdateBar();
+}
+
+// ── ملخص اليوم + تنبيه الأصناف اللي قربت تخلص (أعلى شاشة البيع) ──
+function sellSummaryHtml(){
+  if(!CDAY) return '';
+  const st=calcDayStats();
+  const low=VAN_STOCK.filter(p=>p.qty<=5 && (p.qty>0 || p.origQty>0));
+  const lowHtml=low.length?`<div class="al al-o" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px">
+      <span>⚠️ ${low.length} صنف قرب يخلص: ${low.slice(0,3).map(p=>vlpEsc(p.name)+' ('+fmt(p.qty)+')').join('، ')}${low.length>3?'...':''}</span>
+      <button class="btn btn-gold" style="font-size:12px;padding:6px 10px;white-space:nowrap" onclick="go('vload',document.getElementById('nb-vload'))">🚛 حمّل</button>
+    </div>`:'';
+  return `<div class="g3" style="margin-bottom:10px">
+      <div class="kcard"><div class="kc-val cg">${fmt(st.totalSales)}</div><div class="kc-lbl">مبيعات النهارده ج</div></div>
+      <div class="kcard"><div class="kc-val cb">${fmt(st.expected)}</div><div class="kc-lbl">النقدي معاك ج</div></div>
+      <div class="kcard"><div class="kc-val co">${CDAY.sales.filter(s=>!s.void&&s.total>0).reduce((a,s)=>a.add(s.invoiceId),new Set()).size}</div><div class="kc-lbl">فواتير</div></div>
+    </div>${lowHtml}`;
 }
 
 // ── صف صنف في قايمة البيع: كمية بـ+ و− أو كتابة مباشرة، وزرار "الكل" ──
@@ -2294,6 +2316,12 @@ function openCheckout(){
     <div id="ck-paid-row" class="ig" style="display:none">
       <div class="il">💵 مدفوع كاش الآن <span style="color:var(--t3);font-size:12px">(للآجل بس — اختياري، الباقي يتسجل آجل)</span></div>
       <input type="number" inputmode="decimal" min="0" id="ck-paid" class="ifield" placeholder="0">
+      <div class="il" style="margin-top:8px">📅 ميعاد سداد الآجل <span style="color:var(--t3);font-size:12px">(بعد كام يوم)</span></div>
+      <div style="display:flex;align-items:center;gap:8px"><input type="number" inputmode="numeric" min="1" max="90" id="ck-due" class="ifield" value="7" style="width:90px" oninput="ckDueLabel()"><span id="ck-due-lbl" style="font-size:12.5px;color:var(--t2)"></span></div>
+    </div>
+    <div id="ck-old-row" class="ig" style="display:none">
+      <div class="il">💰 تحصيل من رصيده القديم الآن <span style="color:var(--t3);font-size:12px">(اختياري)</span></div>
+      <input type="number" inputmode="decimal" min="0" id="ck-oldcol" class="ifield" placeholder="0">
     </div>
     <div class="ig">
       <input type="text" id="ck-note" class="ifield" maxlength="200" placeholder="📝 ملاحظة على الفاتورة (اختياري)">
@@ -2309,8 +2337,11 @@ function openCheckout(){
 function ckUpdateCustInfo(v){
   const info=document.getElementById('ck-credit'), paidRow=document.getElementById('ck-paid-row');
   if(paidRow) paidRow.style.display = v ? 'block' : 'none';
-  if(!info) return;
+  ckDueLabel();
   const cu = (v && v!=='_new') ? CUSTOMERS.find(x=>x.id===v) : null;
+  const oldRow=document.getElementById('ck-old-row');
+  if(oldRow) oldRow.style.display = (cu && custBalanceOf(cu)>0) ? 'block' : 'none';
+  if(!info) return;
   if(!cu){ info.innerHTML=''; return; }
   const bal=custBalanceOf(cu), limit=cu.creditLimit||0;
   let h=`رصيده الحالي: <b>${fmt(bal)} ج</b>`;
@@ -2319,6 +2350,17 @@ function ckUpdateCustInfo(v){
     h+=` — الحد الائتماني ${fmt(limit)} ج — المتبقي <b style="color:${left>0?'var(--g)':'var(--red)'}">${fmt(Math.max(0,left))} ج</b>`;
   }
   info.innerHTML=`<div style="font-size:12.5px;color:var(--t2);background:var(--bg3);border-radius:10px;padding:8px 11px;margin:-4px 0 10px">${h}</div>`;
+}
+// تاريخ الاستحقاق = يوم الفاتورة (بتوقيت القاهرة) + عدد الأيام
+function dueDateStr(ts, days){
+  const d=new Date(new Date(ts).toLocaleString('en-US',{timeZone:'Africa/Cairo'}));
+  d.setDate(d.getDate()+days);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function ckDueLabel(){
+  const el=document.getElementById('ck-due-lbl'); if(!el) return;
+  const n=Math.max(1,Math.min(90,parseInt(document.getElementById('ck-due')?.value)||7));
+  el.textContent='يستحق: '+dueDateStr(Date.now(),n);
 }
 function togInvOff(id){ activeInvOffer=activeInvOffer===id?null:id; openCheckout(); }
 async function onCustSel(){
@@ -2433,6 +2475,7 @@ function executeSell(isDebt){
 
   // دفعة كاش مع فاتورة آجل + ملاحظة الفاتورة
   const invNote=(document.getElementById('ck-note')?.value||'').trim().slice(0,200);
+  const dueDays=isDebt ? Math.max(1,Math.min(90,parseInt(document.getElementById('ck-due')?.value)||7)) : 0;
   const paid=(isDebt && custId) ? Math.max(0, Math.min(parseFloat(document.getElementById('ck-paid')?.value)||0, (window._checkoutBase||0)-(window._checkoutDisc||0))) : 0;
 
   let billT=0;
@@ -2466,10 +2509,27 @@ function executeSell(isDebt){
       : (CUSTOMERS.find(x=>x.id===custId)?.phone||'');
     queueSync('sale', {
       invoiceId, custId: custId||null, custName, custPhone, isDebt,
-      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(), note: invNote,
+      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(), note: invNote, dueDays,
     });
   }
   // الدفعة الكاش: تحصيل عادي من العميل (بينزل من رصيده وبيدخل خزنة المندوب) بعد الفاتورة فى الطابور
+  // تحصيل من الرصيد القديم فى نفس اللحظة (بحد أقصى الرصيد اللي كان على العميل قبل الفاتورة دي)
+  const oldColReq=parseFloat(document.getElementById('ck-oldcol')?.value)||0;
+  if(oldColReq>0 && custId){
+    const cuO=CUSTOMERS.find(x=>x.id===custId), stO=STORES.find(s=>s.id===custId);
+    const priorBal=(stO?.oldDebt||0)+Math.max(0,(cuO?.debt||0)-(isDebt?billT:0));
+    const amtO=Math.min(oldColReq, priorBal);
+    if(amtO>0){
+      let rem=amtO;
+      if(stO&&stO.oldDebt>0){ const f=Math.min(rem,stO.oldDebt); stO.oldDebt-=f; rem-=f; LS.s('stores',STORES); }
+      if(cuO&&rem>0){ cuO.debt=Math.max(0,(cuO.debt||0)-rem); LS.s('customers',CUSTOMERS); }
+      const colTs2=Date.now()+2;
+      CDAY.collections.push({id:uid(),custName,custId,amt:amtO,ts:colTs2,invoiceId,note:'تحصيل رصيد قديم مع الفاتورة'});
+      saveDay();
+      if(REP) queueSync('collection', {custId, custName, amt:amtO, ts:colTs2});
+      tgCollect(custName||'عميل', amtO);
+    }
+  }
   if(paid>0){
     const cuP=CUSTOMERS.find(x=>x.id===custId);
     if(cuP){ cuP.debt=Math.max(0,(cuP.debt||0)-paid); LS.s('customers',CUSTOMERS); }
@@ -2489,6 +2549,7 @@ function executeSell(isDebt){
   activeInvOffer=null; cart=[]; saveCart(); PRESET_CUST=''; if(custId) delete _csCache[custId];
   closeModal();
   toast(`✅ فاتورة ${fmt(finalT)} ج — ${isDebt?(paid>0?`آجل (مدفوع ${fmt(paid)})`:'آجل'):'نقدي'}`);
+  showSaleDoneBar(invoiceId, finalT);
   r_sell();
   if(document.getElementById('pg-van')?.classList.contains('on')) r_van();
   sellLock=false;
@@ -2977,6 +3038,22 @@ function showInvoiceActions(invoiceId){
     <button class="btn btn-b btn-xl" onclick="printInvoice('${invoiceId}')">🖨️ طباعة الفاتورة</button>`);
 }
 
+// شريط صغير بعد البيع (٩ ثواني): زرار واحد لإرسال الفاتورة واتساب/طباعتها، من غير ما يعطّل البيع اللي بعده
+function showSaleDoneBar(invoiceId, total){
+  let el=document.getElementById('sale-done');
+  if(!el){
+    el=document.createElement('div'); el.id='sale-done';
+    el.style.cssText='position:fixed;left:10px;right:10px;bottom:76px;z-index:60;background:var(--bg2,#1a1a1a);border:1px solid var(--g);border-radius:14px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:13.5px';
+    document.body.appendChild(el);
+  }
+  el.innerHTML=`<span>✅ فاتورة ${fmt(total)} ج</span>
+    <span style="display:flex;gap:6px"><button class="btn btn-g" style="font-size:13px;padding:8px 12px" onclick="hideSaleDoneBar();showInvoiceActions('${invoiceId}')">📲 إرسال / 🖨️ طباعة</button>
+    <button class="btn btn-b" style="font-size:13px;padding:8px 10px" onclick="hideSaleDoneBar()">✕</button></span>`;
+  el.style.display='flex';
+  clearTimeout(el._t); el._t=setTimeout(hideSaleDoneBar,9000);
+}
+function hideSaleDoneBar(){ const el=document.getElementById('sale-done'); if(el) el.style.display='none'; }
+
 function sendInvoiceWA(invoiceId){
   const phone=document.getElementById('inv-wa-phone')?.value.trim().replace(/^0/,'20');
   const inv={lines:[],custName:'',total:0,debt:false};
@@ -3415,7 +3492,19 @@ function confirmCustomerReturn(fullReturn){
 // ══════════════════════════════════════════════════════════════════
 // ── GOAL PAGE ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════
+// نسبة العمولة من سلطان (sales_reps.commission_pct) — للجلسات اللي دخلت قبل التحديث ومعاهاش النسبة
+let _commFetching=false;
+async function ensureCommission(){
+  if(!REP || REP.commissionPct!=null || _commFetching || !navigator.onLine) return;
+  _commFetching=true;
+  try{
+    const { data } = await sb.from('sales_reps').select('commission_pct').eq('id', REP.id).maybeSingle();
+    if(data){ REP.commissionPct = Number(data.commission_pct)||0; LS.s('rep', REP); if(document.getElementById('pg-goal')?.classList.contains('on')) r_goal(); }
+  }catch(e){ console.warn('ensureCommission', e); }
+  _commFetching=false;
+}
 function r_goal(){
+  ensureCommission();
   const achieved=calcAchieved();
   const target=GOAL.target||0;
   const pct=target>0?Math.min(100,Math.round((achieved/target)*100)):0;
@@ -3435,8 +3524,6 @@ function r_goal(){
   if(CDAY&&lastSaleTs&&(now-lastSaleTs)>3*3600000) alerts.push({t:'warn',m:'⚠️ لا توجد مبيعات منذ أكثر من 3 ساعات'});
   if(target>0&&pct<30&&stats.visits>5) alerts.push({t:'warn',m:'⚠️ المبيعات أقل من 30% رغم '+stats.visits+' زيارات'});
   if(vTarget>0&&stats.visits>0&&convRate<30) alerts.push({t:'warn',m:'⚠️ نسبة التحويل منخفضة ('+convRate+'%)'});
-  const pendingTG=TG.queue.filter(m=>m.status==='pending').length;
-  if(pendingTG>0) alerts.push({t:'info',m:'📡 '+pendingTG+' رسائل في انتظار الإرسال للتليجرام'});
 
   const alertsHtml=alerts.map(a=>`<div class="al ${a.t==='warn'?'al-o':'al-b'}" style="margin-bottom:8px">${a.m}</div>`).join('');
 
@@ -3481,7 +3568,7 @@ function r_goal(){
     <div class="kcard"><div class="kc-val ct">${fmt(stats.totalCollect)}</div><div class="kc-lbl">تحصيل ج</div></div>
     <div class="kcard"><div class="kc-val cr">${fmt(stats.totalReturns)}</div><div class="kc-lbl">مرتجع ج</div></div>
     <div class="kcard"><div class="kc-val cx">${fmt(stats.totalExpenses)}</div><div class="kc-lbl">مصروفات ج</div></div>
-    <div class="kcard"><div class="kc-val" style="font-size:16px">📡 <span id="tg-pending-count">${TG.queue.filter(m=>m.status==='pending').length}</span></div><div class="kc-lbl">TG معلق</div></div>
+    <div class="kcard"><div class="kc-val cg" id="goal-comm">${REP?.commissionPct!=null?fmt(Math.max(0,stats.totalSales-stats.totalReturns)*REP.commissionPct/100):'…'}</div><div class="kc-lbl">💵 عمولتك النهارده ج${REP?.commissionPct?` (${REP.commissionPct}%)`:''}</div></div>
   </div>
   <div class="sec"><div class="st">📦 أكثر مبيعاً</div>${topProds}</div>
   <div class="sec"><div class="st">🏭 المخزون المتبقي</div>
@@ -3504,7 +3591,8 @@ function storeCardHtml(s, i, opts){
   const cust=CUSTOMERS.find(c=>c.id===s.id);
   const debt=(cust?.debt||0)+(s.oldDebt||0);
   const inRoute = getTodayRouteIds().includes(s.id);
-  return `<div class="scard" ${inRoute?'style="border-color:var(--blue)"':''}>
+  const bcol = opts.next ? 'var(--gold)' : tv ? 'var(--g)' : inRoute ? 'var(--blue)' : '';
+  return `<div class="scard" ${bcol?'style="border-color:'+bcol+(opts.next?';border-width:2px':'')+'"':''}>
     <div class="scard-top">
       <div style="flex:1">
         <div class="scard-name">${inRoute?'🗺️ ':''}${s.name}</div>
@@ -3713,7 +3801,14 @@ function r_route(){
     return `<button class="btn ${i===wd?'btn-blue':'btn-b'}" style="flex:1;font-size:11px;padding:8px 2px" onclick="switchRouteDay(${i})">${WEEKDAY_SHORT[i]}${cnt?` (${cnt})`:''}</button>`;
   }).join('');
 
-  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {routeView: true})).join('')
+  // العميل الجاي = أول واحد فى خط النهاردة لسه ما اتزارش؛ الأخضر اللي اتزار
+  const visitedToday = s => !!s.visits?.some(v=>v.date===TODAY);
+  const nextStore = isToday ? routeStores.find(s=>!visitedToday(s)) : null;
+  const doneN = isToday ? routeStores.filter(visitedToday).length : 0;
+  const nextHtml = isToday && routeStores.length ? (nextStore
+    ? `<div class="al al-gold" style="margin-bottom:10px;font-size:13.5px">➡️ العميل الجاي: <b>${vlpEsc(nextStore.name)}</b>${nextStore.address?' — '+vlpEsc(nextStore.address):''} <span style="color:var(--t3)">(${doneN} من ${routeStores.length} اتزاروا)</span></div>`
+    : `<div class="al al-teal" style="margin-bottom:10px;font-size:13.5px">✅ خلّصت خط النهاردة (${routeStores.length} من ${routeStores.length})</div>`) : '';
+  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {routeView: true, next: nextStore===s})).join('')
     || `<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">مفيش محلات في خط سير ${WEEKDAY_NAMES[wd]} لسه — ضيف من تحت</div>`;
 
   const addOptionsHtml = otherStores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
@@ -3729,6 +3824,7 @@ function r_route(){
       <button class="btn btn-g" style="padding:0 16px" onclick="addToRouteDay(${wd})">إضافة</button>
     </div>
   </div>
+  ${nextHtml}
   <div id="route-list">${cardsHtml}</div>`;
 }
 
@@ -4058,8 +4154,34 @@ function r_more(){
     <div class="st">📦 مخزون السيارة</div>
     <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — تقدر تحمّل عربيتك بنفسك من تبويب "🚛 حمّل"، أو الأدمن يحمّلهالك من سلطان ERP</div>
     ${VAN_STOCK.length?`<div class="al al-teal">✅ مخزون السيارة: ${VAN_STOCK.length} صنف — ${VAN_STOCK.filter(p=>p.qty>0).length} متاح</div>`:'<div class="al al-o">⚠️ مخزون السيارة فارغ — لسه محدش حمّل عربيتك من سلطان</div>'}
-    <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   </div>
+  <div class="sec">
+    <div class="st">👤 الحساب</div>
+    <div class="al al-teal" style="margin-bottom:10px">حساب سلطان: ${REP?.name||'—'}</div>
+    <button class="btn btn-r btn-lg" onclick="repLogout()">🚪 تسجيل خروج من حساب سلطان</button>
+  </div>
+  <div class="sec">
+    <div class="st">📅 سجل الأيام (${days.length})</div>
+    ${days.slice(0,7).map(d=>{
+      const rec=DAYS[d];
+      const s=rec?Object.assign({},rec.sales?.filter?.(s=>!s.void).reduce((a,s)=>({...a,t:(a.t||0)+(s.total>0?s.total:0)}),{t:0})):null;
+      return `<div class="row" style="cursor:pointer" onclick="showDayReport('${d}')">
+        <span class="rl">${d} — ${rec?.status==='closed'?'🔴 مغلق':'🟢 مفتوح'}</span>
+        <span class="rv cg">${s?fmt(s.t)+' ج':'—'}</span>
+      </div>`;
+    }).join('')||'<div style="color:var(--t3);text-align:center;font-size:13px">لا سجلات</div>'}
+  </div>
+  <div class="sec">
+    <button class="btn btn-adm btn-lg" onclick="requireAdmin('أدوات المدير',showMoreAdmin)">🔐 أدوات المدير (إعدادات، مزامنة، نسخ احتياطي...)</button>
+    <div id="more-admin"></div>
+  </div>`;
+}
+
+// أدوات المدير: مخبّية ورا الـPIN علشان المندوب ما يضغط على حاجة خطر بالغلط
+function showMoreAdmin(){
+  const el=document.getElementById('more-admin'); if(!el) return;
+  el.innerHTML=`
+  <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   <div class="sec">
     <div class="st">📡 مزامنة سلطان ERP</div>
     <div style="font-size:12px;color:var(--t3);margin-bottom:8px">${SYNC_QUEUE.length?`${SYNC_QUEUE.length} عملية فى الطابور${SYNC_QUEUE.some(e=>e.attempts>0)?' — فيه عمليات فشلت ⚠️':''}`:'كل حاجة اتزامنت مع سلطان ✅'}</div>
@@ -4067,12 +4189,10 @@ function r_more(){
   </div>
   <div class="sec">
     <div class="st">⚙️ الإعدادات</div>
-    <div class="al al-teal" style="margin-bottom:10px">👤 حساب سلطان: ${REP?.name||'—'}</div>
     <div class="ig"><div class="il">الخط</div><input type="text" id="cfg-route" class="ifield" value="${CFG?.route||''}"></div>
     <div class="ig"><div class="il">PIN جديد (4 أرقام)</div><input type="number" id="cfg-pin" class="ifield" placeholder="اتركه فارغاً إذا لا تريد التغيير"></div>
     <button class="btn btn-b btn-lg" style="margin-bottom:10px" onclick="saveCfg()">حفظ الإعدادات</button>
     <button class="btn btn-adm btn-lg" style="margin-bottom:10px" onclick="requireAdmin('إعدادات المدير',showAdminCfg)">⚙️ إعدادات المدير 🔐</button>
-    <button class="btn btn-r btn-lg" onclick="repLogout()">🚪 تسجيل خروج من حساب سلطان</button>
   </div>
   <div class="sec">
     <div class="st">📱 تليجرام — رقابة فورية</div>
@@ -4103,17 +4223,6 @@ function r_more(){
     </div>
     <button class="btn btn-b btn-lg" onclick="exportCSV()">📊 تصدير CSV اليوم</button>
     <button class="btn btn-r btn-lg" style="margin-top:8px" onclick="showSmartReset()">🔄 التنظيف الذكي 🔐</button>
-  </div>
-  <div class="sec">
-    <div class="st">📅 سجل الأيام (${days.length})</div>
-    ${days.slice(0,7).map(d=>{
-      const rec=DAYS[d];
-      const s=rec?Object.assign({},rec.sales?.filter?.(s=>!s.void).reduce((a,s)=>({...a,t:(a.t||0)+(s.total>0?s.total:0)}),{t:0})):null;
-      return `<div class="row" style="cursor:pointer" onclick="showDayReport('${d}')">
-        <span class="rl">${d} — ${rec?.status==='closed'?'🔴 مغلق':'🟢 مفتوح'}</span>
-        <span class="rv cg">${s?fmt(s.t)+' ج':'—'}</span>
-      </div>`;
-    }).join('')||'<div style="color:var(--t3);text-align:center;font-size:13px">لا سجلات</div>'}
   </div>
   <div class="sec">
     <div class="st">📝 سجل التدقيق (Audit Trail) <span class="st-a" onclick="showFullAudit()">عرض الكل</span></div>
