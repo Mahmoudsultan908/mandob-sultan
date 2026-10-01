@@ -4107,9 +4107,15 @@ async function vlpConfirmLoad(){
   VLP.busy = true;
   if(btn){ btn.disabled=true; btn.textContent='⏳ جاري التحقق...'; }
   try{
-    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
-    if(!repRow?.van_load_pin){ fail('التحميل الذاتي لسه مش مفعّل ليك — كلّم الأدمن يحدّدلك PIN'); return; }
-    if(repRow.van_load_pin !== pin){ fail('PIN غلط — حاول تاني'); return; }
+    // التحقق من الـPIN على السيرفر (الـPIN الحقيقي ما بيوصلش التليفون) — ٥ محاولات غلط = قفل ١٥ دقيقة
+    const { data: chk, error: chkErr } = await sb.rpc('fn_verify_van_load_pin', { p_pin: pin });
+    if(chkErr){ fail('تعذّر التحقق من الـPIN — اتأكد من النت وحاول تاني'); return; }
+    if(!chk?.ok){
+      if(chk?.reason==='not_enabled') fail('التحميل الذاتي لسه مش مفعّل ليك — كلّم الأدمن يحدّدلك PIN');
+      else if(chk?.reason==='locked') fail(`محاولات غلط كتير — استنى ${chk.wait_min||15} دقيقة وحاول تاني`);
+      else fail(`PIN غلط — فاضل ${chk?.left ?? ''} محاولات`);
+      return;
+    }
     // إعادة التحقق من الرصيد لحظيًا قبل التنفيذ — منعًا لأي تغيّر من وقت ما اخترت
     const pids = Object.keys(VLP.cart);
     const { data: fresh } = await sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', VLP.whId).in('product_id', pids);
