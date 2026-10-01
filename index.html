@@ -109,6 +109,11 @@ body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-h
 /* INPUTS */
 .ig{margin-bottom:10px}
 .il{font-size:13px;color:var(--t2);margin-bottom:4px;font-weight:600}
+.cpk-list{position:absolute;z-index:50;top:100%;right:0;left:0;max-height:240px;overflow-y:auto;background:var(--bg2,#fff);border:1px solid var(--bdr);border-radius:11px;margin-top:3px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.cpk-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid var(--bdr);font-size:14px;cursor:pointer}
+.cpk-item:last-child{border-bottom:0}
+.cpk-bal{font-size:12px;color:var(--t3);white-space:nowrap}
+.cpk-bal.d{color:var(--orange);font-weight:700}
 .ifield{width:100%;background:var(--bg3);border:1px solid var(--bdr);border-radius:11px;padding:10px 13px;font-family:'Cairo',sans-serif;font-size:14px;color:var(--text);outline:none}
 .ifield:focus{border-color:var(--g)}
 .ifield::placeholder{color:var(--t3)}
@@ -365,24 +370,18 @@ function pinTap(e,v){}
   <div id="pg-ledger"    class="page"></div>
   <div id="pg-goal"      class="page"></div>
   <div id="pg-stores"    class="page"></div>
-  <div id="pg-customers" class="page"></div>
-  <div id="pg-offers"    class="page"></div>
   <div id="pg-vload"     class="page"></div>
   <div id="pg-more"      class="page"></div>
   <div id="pg-van"       class="page"></div>
   <div id="pg-route"     class="page"></div>
 
-  <nav class="nav" style="grid-template-columns:repeat(10,1fr)">
+  <nav class="nav" style="grid-template-columns:repeat(9,1fr)">
     <button class="nb on"  onclick="go('sell',this)">     <span class="ni">🧾</span><span class="nl">بيع</span></button>
     <button class="nb"     onclick="go('ledger',this)">   <span class="ni">💰</span><span class="nl">كشف</span></button>
-    <button class="nb"     onclick="go('goal',this)">     <span class="ni">🎯</span><span class="nl">الهدف</span></button>
-    <button class="nb"     onclick="go('stores',this)">   <span class="ni">🏪</span><span class="nl">محلات</span></button>
-    <button class="nb"     onclick="go('route',this)">    <span class="ni">🗺️</span><span class="nl">الخط</span></button>
-    <button class="nb"     onclick="go('customers',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
-    <button class="nb"     onclick="go('offers',this)">   <span class="ni">🎁</span><span class="nl">عروض</span></button>
+    <button class="nb" id="nb-stores" onclick="go('stores',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
     <button class="nb" id="nb-vload" onclick="go('vload',this)"><span class="ni">🚛</span><span class="nl">حمّل</span></button>
     <button class="nb"     onclick="go('van',this);r_van()"><span class="ni">🚗</span><span class="nl">سيارة</span></button>
-    <button class="nb"     onclick="go('more',this)">     <span class="ni">⚙️</span><span class="nl">المزيد</span></button>
+    <button class="nb" id="nb-more" onclick="go('more',this)"><span class="ni">⚙️</span><span class="nl">المزيد</span></button>
   </nav>
 </div>
 
@@ -446,8 +445,8 @@ if(CFG && ('tgToken' in CFG || 'tgChatId' in CFG)){ delete CFG.tgToken; delete C
 let DAYS      = LS.g('days')      || {};
 let CUSTOMERS = LS.g('customers') || [];
 let STORES    = LS.g('stores')    || [];
-let OFFERS    = LS.g('offers')    || [];
-let INV_OFFERS= LS.g('invOffers') || [];
+let OFFERS    = [];   // العروض اتشالت من التطبيق (أكتوبر 2026) — الأسعار من سلطان بدون عروض محلية
+let INV_OFFERS= [];
 let WAREHOUSE = LS.g('warehouse') || [];
 let VAN_STOCK = LS.g('van_stock') || [];  // مخزون السيارة الدائم — مستقل عن اليوم
 let AUDIT     = LS.g('audit')     || [];
@@ -478,9 +477,8 @@ let   CDAY    = null;
 let cart          = LS.g('cart_'+TODAY) || [];
 let activeInvOffer= null;
 let sellLock      = false;
-let CUST_TAB      = 'pending'; // 'pending' | 'collected'
 let STORE_SEARCH_Q= '';
-let CUST_SEARCH_Q = '';
+let PRESET_CUST   = '';   // عميل متحدد من كارت العميل (زرار "بيع" أو "كرر آخر فاتورة") لحد ما الفاتورة تتم
 let ROUTE = LS.g('route') || { templates:{} };
 function saveRoute(){ LS.s('route', ROUTE); }
 const WEEKDAY_NAMES=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
@@ -602,7 +600,7 @@ function tgDeposit(amt){
   TG.notify(tgHeader('🏦','توريد للخزنة')+`\n💵 <b>${fmt(amt)} ج</b>`);
 }
 function tgStartDay(startCash, prodsCount){
-  TG.notify(tgHeader('🌅','بدء يوم جديد')+`\n📦 أصناف: ${prodsCount}\n💵 العهدة: ${fmt(startCash)} ج\n📅 ${TODAY}`);
+  TG.notify(tgHeader('🌅','بدء يوم جديد')+`\n📦 أصناف: ${prodsCount}\n📅 ${TODAY}`);
 }
 function tgCloseDay(stats, actual){
   const diff=actual-stats.expected;
@@ -683,7 +681,22 @@ function newDayRecord(date){
 
 // loadDay — load today's record only
 function loadDay(){
+  pruneOldDays();
   CDAY = DAYS[TODAY] || null;
+}
+// سجلات الأيام الأقدم من أسبوع بتتشال من التطبيق (الأصل موجود في البرنامج الرئيسي).
+// ما بتتشالش لو فيه مبيعات لسه ما اتزامنتش، علشان ما نخسرش حاجة.
+const DAYS_KEEP = 7;
+function pruneOldDays(){
+  try{
+    if(SYNC_QUEUE.some(e=>e.status==='pending')) return;
+    const limit = new Date(Date.now() - DAYS_KEEP*86400000).toISOString().split('T')[0];
+    let changed = false;
+    Object.keys(DAYS).forEach(d=>{
+      if(d < limit && d !== TODAY){ delete DAYS[d]; changed = true; }
+    });
+    if(changed) LS.s('days', DAYS);
+  }catch(e){ console.warn('pruneOldDays', e); }
 }
 
 // migrateToVanStock — one-time migration from old loadedProducts to VAN_STOCK
@@ -732,6 +745,7 @@ function getPendingPrevSales(){
 function voidPrevInvoiceLines(date, invoiceId, reason){
   const day = DAYS[date];
   if(!day || !day.sales) return 0;
+  if(invHasPartPayment(invoiceId)){ toast('فاتورة '+invoiceId+' فيها دفعة كاش — الإلغاء من البرنامج الرئيسي','err'); return 0; }
   const lines = day.sales.filter(s => s.invoiceId === invoiceId && !s.void);
   let totalVoided = 0;
   lines.forEach(s => {
@@ -775,6 +789,7 @@ function showPrevInvoicesPage(){
       <div style="font-size:17px;font-weight:900;color:var(--orange)">📋 فواتير أيام سابقة (${pending.length})</div>
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:10px">ℹ️ الفواتير هنا بتختفي بعد ${DAYS_KEEP} أيام — لو عايز تشوف فاتورة أقدم ارجع للبرنامج الرئيسي.</div>
     ${pending.length?`<button class="btn btn-lg" style="width:100%;background:var(--red);color:#fff;font-family:Cairo,sans-serif;font-weight:900;border-radius:14px;margin-bottom:14px" onclick="clearAllPrevInvoices()">🗑️ امسح كل الفواتير السابقة 🔐</button>`:''}
     <div class="sec" style="max-height:60vh;overflow-y:auto">${rows}</div>`);
 }
@@ -799,31 +814,6 @@ function clearAllPrevInvoices(){
     toast(`🗑️ تم مسح ${pending.length} فاتورة سابقة`);
     showPrevInvoicesPage();
   });
-}
-
-// ══════════════════════════════════════════════════════════════════
-// ── صفحة الديون القديمة (منفصلة) ────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════
-// عرض فقط — الرصيد الافتتاحي (oldDebt) بيتزامن من رصيد العميل الحقيقي
-// فى سلطان ERP (customers.balance)، وأي تصحيح/تسوية بيتعمل من هناك.
-function showOldDebtsPage(){
-  const withDebt = STORES.filter(s=>(s.oldDebt||0)>0).sort((a,b)=>(b.oldDebt||0)-(a.oldDebt||0));
-  const rows = withDebt.length ? withDebt.map(s=>`
-    <div style="padding:10px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center">
-      <div><div style="font-weight:700;font-size:14px">${s.name}</div>${s.phone?`<div style="font-size:11px;color:var(--t3)">${s.phone}</div>`:''}</div>
-      <span style="font-weight:900;color:var(--orange)">${fmt(s.oldDebt)} ج</span>
-    </div>`).join('') : '<div style="text-align:center;color:var(--t3);padding:20px;font-size:14px">مفيش ديون قديمة مسجلة</div>';
-
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:17px;font-weight:900;color:var(--orange)">💰 الديون القديمة</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-teal" style="margin-bottom:14px">بتتزامن تلقائي من سلطان ERP — أي تصحيح أو تسوية بيتعمل من هناك</div>
-    <div class="sec" style="max-height:60vh;overflow-y:auto">
-      <div class="st">📋 الديون القديمة المسجلة (${withDebt.length})</div>
-      ${rows}
-    </div>`);
 }
 
 function saveDay(){ if(CDAY){ const key=CDAY.date||TODAY; DAYS[key]=CDAY; LS.s('days',DAYS); } }
@@ -937,8 +927,8 @@ async function checkRepSession(){
     await sb.auth.signOut();
     return false;
   }
-  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', profile.id).maybeSingle();
-  REP = { id: profile.id, name: profile.name || profile.email, treasuryId: repRow?.treasury_id||null, priceLevelCode: repRow?.price_levels?.code||null };
+  const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target, commission_pct').eq('id', profile.id).maybeSingle();
+  REP = { id: profile.id, name: profile.name || profile.email, treasuryId: repRow?.treasury_id||null, priceLevelCode: repRow?.price_levels?.code||null, commissionPct: Number(repRow?.commission_pct)||0 };
   LS.s('rep', REP);
   if(repRow){
     GOAL.target = Number(repRow.daily_sales_target)||0;
@@ -954,7 +944,7 @@ async function checkRepSession(){
 // نداءها فى checkRepSession لسبب إضافتها
 async function refreshRepConfig(repId){
   try{
-    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', repId).maybeSingle();
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target, commission_pct').eq('id', repId).maybeSingle();
     if(!repRow) return;
     let changed=false;
     const newTreasuryId = repRow.treasury_id||null;
@@ -1093,7 +1083,7 @@ async function syncVanStockFromSultan(){
   if(SYNC_QUEUE.some(e=>e.kind==='sale' && e.status==='pending')) return {added:0,updated:0,error:null,skipped:true};
   try{
     const { data, error } = await sb.from('van_stock')
-      .select('product_id, qty, products(name, retail_price, wholesale_price, unit, purchase_price, images)')
+      .select('product_id, qty, products(name, code, retail_price, wholesale_price, unit, purchase_price, images)')
       .eq('rep_id', REP.id);
     if(error) return {added:0,updated:0,error:error.message};
 
@@ -1119,12 +1109,13 @@ async function syncVanStockFromSultan(){
       // فهامش الربح فى داشبورد سلطان كان بيظهر أعلى بكتير من الحقيقي.
       const cost = Number(row.products?.purchase_price)||0;
       const img = (row.products?.images && row.products.images[0]) || null;
+      const code = row.products?.code || '';
       let p = VAN_STOCK.find(x=>x.id===row.product_id);
       if(!p){
-        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, cost, qty, origQty:qty, unit:row.products?.unit||'', img, _sultanSynced:true});
+        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', code, price, cost, qty, origQty:qty, unit:row.products?.unit||'', img, _sultanSynced:true});
         added++;
-      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost || p.img!==img)){
-        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name; p.img=img;
+      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost || p.img!==img || p.code!==code)){
+        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name; p.img=img; p.code=code;
         updated++;
       }
     });
@@ -1274,6 +1265,19 @@ function isDuplicateRefError(err){
   return !!(err && err.code === '23505' && /ref/i.test(err.message||''));
 }
 
+// ملاحظة الفاتورة: بتتحفظ فى sales.notes بعد إنشاء الفاتورة (الداتابيز بتسمح لصاحب الفاتورة يعدّل الملاحظات
+// بس). لو فشلت ما بنوقفش مزامنة الفاتورة نفسها — الملاحظة مش مالية.
+// وميعاد السداد: الداتابيز بتحسبه تلقائي (يوم الفاتورة + ٧) لو فاضي، فبنكتبه بس لو المندوب اختار غير ٧.
+async function saveSaleExtras(saleId, payload){
+  const upd = {};
+  if(payload.note) upd.notes = payload.note;
+  if(payload.isDebt && payload.dueDays && payload.dueDays!==7) upd.due_date = dueDateStr(payload.ts||Date.now(), payload.dueDays);
+  if(!Object.keys(upd).length) return;
+  try{
+    const { error } = await sb.from('sales').update(upd).eq('id', saleId);
+    if(error) console.warn('saveSaleExtras', error.message);
+  }catch(e){ console.warn('saveSaleExtras', e); }
+}
 const SYNC_HANDLERS = {
   sale: async (payload) => {
     const items = payload.items.filter(it => isRealSultanId(it.productId));
@@ -1319,12 +1323,14 @@ const SYNC_HANDLERS = {
         _invoiceIdMap[payload.invoiceId] = existing.id;
         LS.s('invoiceIdMap', _invoiceIdMap);
       }
+      if(existing) await saveSaleExtras(existing.id, payload);
       return;
     }
     if(data && data[0] && payload.invoiceId){
       _invoiceIdMap[payload.invoiceId] = data[0].id;
       LS.s('invoiceIdMap', _invoiceIdMap);
     }
+    if(data && data[0]) await saveSaleExtras(data[0].id, payload);
   },
 
   // إلغاء فاتورة اتزامنت بالفعل — بيستخدم نفس مسار الإلغاء اللي شاشة
@@ -1505,7 +1511,7 @@ function updateSyncBadge(){
   if(!d) return;
   if(!pending){ d.style.display='none'; return; }
   d.style.display='inline-block';
-  d.textContent = failed ? `⚠️ ${pending}` : `⏳ ${pending}`;
+  d.textContent = failed ? `⚠️ ${pending} فشلت — اضغط` : `⏳ ${pending} لسه ما اتبعتتش`;
   d.title = failed ? 'فيه عمليات فشلت فى المزامنة — راجعها' : 'عمليات معلّقة هتتزامن أول ما النت يرجع';
 }
 
@@ -1577,7 +1583,7 @@ async function verifyRepStillActive(userId){
       return;
     }
     const freshName = profile.name || profile.email;
-    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target').eq('id', userId).maybeSingle();
+    const { data:repRow } = await sb.from('sales_reps').select('treasury_id, price_levels(code), daily_sales_target, daily_visits_target, commission_pct').eq('id', userId).maybeSingle();
     const freshTreas = repRow?.treasury_id||null, freshLevel = repRow?.price_levels?.code||null;
     if(freshName!==REP.name || freshTreas!==REP.treasuryId || freshLevel!==REP.priceLevelCode){
       REP.name=freshName; REP.treasuryId=freshTreas; REP.priceLevelCode=freshLevel;
@@ -1826,8 +1832,10 @@ function go(name,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('on'));
   document.getElementById('pg-'+name).classList.add('on');
+  // صفحات داخلية من غير زرار فى الشريط: الخط تحت "عملاء"، والهدف تحت "المزيد"
+  if(!btn) btn = document.getElementById(name==='route'?'nb-stores':name==='goal'?'nb-more':'');
   if(btn)btn.classList.add('on');
-  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,offers:r_offers,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
+  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
 }
 const noop=()=>{};
 
@@ -1846,10 +1854,6 @@ async function showStartDay(){
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
     <div class="al al-gold" style="margin-bottom:14px">📅 ${dayName(TODAY)}</div>
-    <div class="ig">
-      <div class="il">💰 العهدة الابتدائية (ج)</div>
-      <input type="number" id="sd-cash" class="ifield" placeholder="مثال: 300" value="0">
-    </div>
     <div class="sec" style="margin-bottom:14px">
       <div class="st">📦 مخزون العربية</div>
       ${readyCount?`<div class="al al-teal">✅ عندك ${readyCount} صنف جاهز فى العربية (متزامن من سلطان)</div>`:
@@ -1860,7 +1864,7 @@ async function showStartDay(){
 
 function confirmStartDay(){
   autoBackup();
-  const startCash = parseFloat(document.getElementById('sd-cash')?.value)||0;
+  const startCash = 0;   // العهدة اتشالت من التطبيق (أكتوبر 2026)
   const readyCount = VAN_STOCK.filter(p=>p.qty>0).length;
   if(CDAY){
     // New shift — just add cash and log
@@ -1904,12 +1908,10 @@ function showCloseDay(){
     </div>
     <div class="sec" style="margin-bottom:14px">
       <div class="st">💵 تسوية النقدية</div>
-      <div class="row"><span class="rl">عهدة البداية</span><span class="rv co">+${fmt(CDAY.startCash)} ج</span></div>
       <div class="row"><span class="rl">مبيعات نقدي</span><span class="rv cg">+${fmt(stats.totalCash)} ج</span></div>
       <div class="row"><span class="rl">تحصيل</span><span class="rv ct">+${fmt(stats.totalCollect)} ج</span></div>
       <div class="row"><span class="rl">مرتجع نقدي</span><span class="rv cr">−${fmt(stats.totalReturnsCash)} ج</span></div>
       <div class="row"><span class="rl">مصروفات</span><span class="rv cx">−${fmt(stats.totalExpenses)} ج</span></div>
-      <div class="row"><span class="rl">توريد</span><span class="rv cp">−${fmt(stats.totalDeposits)} ج</span></div>
       <div class="row" style="border-top:2px solid var(--bdr);margin-top:6px;padding-top:10px">
         <span style="font-weight:900;color:var(--t2)">المفروض مع المندوب</span>
         <span style="font-size:18px;font-weight:900;color:var(--g)">${fmt(stats.expected)} ج</span>
@@ -1927,6 +1929,10 @@ function showCloseDay(){
       </div>`;
       return '<div class="al al-g" style="margin-bottom:10px">✅ كل البضاعة اتمرتجعت أو اتباعت</div>';
     })()}
+    ${(()=>{
+      const n = SYNC_QUEUE.filter(e=>e.status==='pending').length;
+      return n ? `<div class="al al-o" style="margin-bottom:10px">⚠️ فيه <strong>${n}</strong> عملية لسه ما اتبعتتش للبرنامج الرئيسي — اتأكد إن النت شغال وانتظر لحد ما تتزامن قبل الإغلاق.</div>` : '';
+    })()}
     <button class="btn btn-r btn-xl" onclick="confirmCloseDay()">إغلاق اليوم نهائياً 🌙</button>`);
   // store expected for diff calc
   window._expectedCash = stats.expected;
@@ -1943,6 +1949,8 @@ function calcDiff(){
 }
 
 function confirmCloseDay(){
+  const unsynced = SYNC_QUEUE.filter(e=>e.status==='pending').length;
+  if(unsynced && !confirm(`⚠️ فيه ${unsynced} عملية لسه ما اتبعتتش للبرنامج الرئيسي.\nالأفضل تستنى لحد ما تتزامن. تقفل اليوم برضه؟`)) return;
   const actual = parseFloat(document.getElementById('cd-actual')?.value)||0;
   const stats  = calcDayStats();
   CDAY.status  = 'closed';
@@ -1972,8 +1980,9 @@ function calcDayStats(){
   return a+r.qty*r.unit;
 },0);
   const totalExpenses= CDAY.expenses.reduce((a,e)=>a+e.amt,0);
-  const totalDeposits= CDAY.deposits.reduce((a,d)=>a+d.amt,0);
-  const expected     = (CDAY.startCash||0)+totalCash+totalCollect-totalReturnsCash-totalExpenses-totalDeposits;
+  const totalDeposits= 0;   // التوريد والعهدة اتشالوا من التطبيق (أكتوبر 2026): الفلوس بتتحوّل من سلطان ERP
+  // المفروض مع المندوب = نقدي + تحصيل − مرتجع نقدي − مصروفات
+  const expected     = totalCash+totalCollect-totalReturnsCash-totalExpenses;
   const visits       = CDAY.visits.length;
   const soldVisits   = CDAY.visits.filter(v=>v.status==='sold').length;
   return {totalSales,totalCash,totalDebt,totalCollect,totalReturns,totalReturnsCash,totalExpenses,totalDeposits,expected,visits,soldVisits};
@@ -2024,10 +2033,85 @@ function r_sell(){
   }
 
   const prods  = VAN_STOCK.filter(p=>p.qty>0);
-  const cartT  = cart.reduce((a,c)=>{const r=cprice(c.prodId,c.qty);return a+r.total;},0);
-  const cartN  = cart.length;
 
-  const cartBar = cartN ? `
+  // الصفحة بتتبني مرة واحدة؛ بعد كده الضغط على صنف بيحدّث الصف والشريط بس (من غير ما القايمة
+  // تتبني من جديد): القايمة ما بتقفزش، البحث ما بيتمسحش، والكيبورد ما بيقفلش.
+  pg.innerHTML=`
+  ${sellSummaryHtml()}
+  <div id="sell-bar"></div>
+  <div class="sec">
+    <div class="st">🛒 أصناف اليوم (${prods.length})
+      <span style="display:flex;gap:8px">
+        <span class="st-a" onclick="requireAdmin('إدارة أصناف اليوم',clearDayProducts)">تعديل/حذف 🔐</span>
+        <span class="st-a" onclick="go('more',document.getElementById('nb-more'))">⚙️ إعدادات</span>
+      </span>
+    </div>
+    <input class="sbox" id="sell-search" placeholder="🔍 ابحث بالاسم أو الكود..." oninput="filterSell(this.value)">
+    <div id="sell-list"></div>
+  </div>`;
+  sellRenderList();
+  sellUpdateBar();
+}
+
+// ── ملخص اليوم + تنبيه الأصناف اللي قربت تخلص (أعلى شاشة البيع) ──
+function sellSummaryHtml(){
+  if(!CDAY) return '';
+  const st=calcDayStats();
+  const low=VAN_STOCK.filter(p=>p.qty<=5 && (p.qty>0 || p.origQty>0));
+  const lowHtml=low.length?`<div class="al al-o" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px">
+      <span>⚠️ ${low.length} صنف قرب يخلص: ${low.slice(0,3).map(p=>vlpEsc(p.name)+' ('+fmt(p.qty)+')').join('، ')}${low.length>3?'...':''}</span>
+      <button class="btn btn-gold" style="font-size:12px;padding:6px 10px;white-space:nowrap" onclick="go('vload',document.getElementById('nb-vload'))">🚛 حمّل</button>
+    </div>`:'';
+  return `<div class="g3" style="margin-bottom:10px">
+      <div class="kcard"><div class="kc-val cg">${fmt(st.totalSales)}</div><div class="kc-lbl">مبيعات النهارده ج</div></div>
+      <div class="kcard"><div class="kc-val cb">${fmt(st.expected)}</div><div class="kc-lbl">النقدي معاك ج</div></div>
+      <div class="kcard"><div class="kc-val co">${CDAY.sales.filter(s=>!s.void&&s.total>0).reduce((a,s)=>a.add(s.invoiceId),new Set()).size}</div><div class="kc-lbl">فواتير</div></div>
+    </div>${lowHtml}`;
+}
+
+// ── صف صنف في قايمة البيع: كمية بـ+ و− أو كتابة مباشرة، وزرار "الكل" ──
+function sellRowHtml(p){
+  const ci  = cart.find(c=>c.prodId===p.id);
+  const off = OFFERS.find(o=>o.active&&o.prodId===p.id);
+  const low = p.qty>0&&p.qty<=5;
+  const right = ci
+    ? `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+         <div class="qpill"><button onclick="event.stopPropagation();adjC('${p.id}',-1)">−</button><input class="qin" type="number" inputmode="decimal" min="0" max="${p.qty}" step="any" value="${ci.qty}" onclick="event.stopPropagation()" onchange="sellSetQty('${p.id}',this.value)"><button onclick="event.stopPropagation();adjC('${p.id}',1)">+</button></div>
+         <span class="vall" onclick="event.stopPropagation();sellSetQty('${p.id}',${p.qty})">الكل (${fmt(p.qty)})</span>
+       </div>`
+    : `<div class="vpick">${p.qty===0?'نفد':fmt(p.qty)}</div>`;
+  return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" id="sr-${p.id}" onclick="tapProd('${p.id}')">
+    <div class="pemoji">${prodVisualHtml(p)}</div>
+    <div class="pinfo">
+      <div class="pname" style="white-space:normal;line-height:1.35;font-size:14px">${vlpEsc(p.name)}</div>
+      <div class="pprice">${fmt(p.price)} ج/وحدة</div>
+      <div class="pavail">${p.qty===0?'<span style="color:var(--red)">نفد</span>':'متاح: '+fmt(p.qty)+(low?' ⚠️':'')}</div>
+      ${off?`<div class="ptag">🎁 ${vlpEsc(off.name)}</div>`:''}
+    </div>
+    ${right}
+  </div>`;
+}
+
+function sellRenderList(){
+  const list=document.getElementById('sell-list'); if(!list) return;
+  const q=(document.getElementById('sell-search')?.value||'').trim().toLowerCase();
+  const prods=VAN_STOCK.filter(p=>p.qty>0 && (!q || (p.name||'').toLowerCase().includes(q) || String(p.code||'').toLowerCase().includes(q)));
+  list.innerHTML = prods.map(sellRowHtml).join('') ||
+    (VAN_STOCK.some(p=>p.qty>0)
+      ? '<div style="color:var(--t3);text-align:center;padding:14px">لا نتائج</div>'
+      : '<div style="text-align:center;padding:36px 0;color:var(--t3)"><div style="font-size:40px;margin-bottom:12px">📦</div><div style="font-size:14px">لا توجد أصناف<br>حمّل عربيتك من تبويب "🚛 حمّل"</div></div>');
+}
+
+function sellUpdateBar(){
+  const bar=document.getElementById('sell-bar'); if(!bar) return;
+  const cartT = cart.reduce((a,c)=>{const r=cprice(c.prodId,c.qty);return a+r.total;},0);
+  const cartN = cart.length;
+  const pcu = PRESET_CUST ? CUSTOMERS.find(c=>c.id===PRESET_CUST) : null;
+  const presetHtml = pcu ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--blue);border-radius:13px;padding:9px 13px;margin-bottom:10px;font-size:13.5px">
+      <span>👤 الفاتورة على: <b>${vlpEsc(pcu.name)}</b></span>
+      <span style="display:flex;gap:6px"><button class="btn btn-b" style="font-size:12px;padding:6px 10px" onclick="repeatLastInvoice('${pcu.id}')">🔁 كرر آخر فاتورة</button><button class="btn btn-r" style="font-size:12px;padding:6px 10px" onclick="PRESET_CUST='';sellUpdateBar()">✕</button></span>
+    </div>` : '';
+  bar.innerHTML = presetHtml + (cartN ? `
   <div class="cart-bar">
     <div>
       <div style="font-size:20px;font-weight:900;color:var(--g)">${fmt(cartT)} ج</div>
@@ -2038,95 +2122,41 @@ function r_sell(){
       <button class="btn btn-g" style="padding:9px 18px;font-size:15px;font-weight:900;border-radius:13px" onclick="openCheckout()">دفع ✓</button>
     </div>
   </div>` :
-  `<div style="background:var(--bg3);border-radius:13px;padding:13px;text-align:center;color:var(--t3);font-size:14px;margin-bottom:12px;border:1px dashed var(--bdr)">اضغط على أي صنف لإضافته للسلة 👇</div>`;
+  `<div style="background:var(--bg3);border-radius:13px;padding:13px;text-align:center;color:var(--t3);font-size:14px;margin-bottom:12px;border:1px dashed var(--bdr)">اضغط على أي صنف لإضافته للسلة 👇</div>`);
+}
 
-  // Stock warnings
-  const lowProds = prods.filter(p=>p.qty>0&&p.qty<=5);
-  const warnHtml = '';
-  const zeroProds = prods.filter(p=>p.qty===0);
-  const zeroHtml = '';
+function sellUpdateRow(pid){
+  const el=document.getElementById('sr-'+pid);
+  if(el){
+    const ci=cart.find(c=>c.prodId===pid), inp=el.querySelector('.qin');
+    if(ci && inp){ inp.value=ci.qty; el.classList.add('sel'); }      // نفس الصف يفضل زي ما هو (الفوكس والكيبورد)
+    else { const p=vanFind(pid); if(p) el.outerHTML=sellRowHtml(p); }
+  }
+  sellUpdateBar();
+}
 
-  const prodsHtml = prods.length ? prods.map(p=>{
-    const ci  = cart.find(c=>c.prodId===p.id);
-    const off = OFFERS.find(o=>o.active&&o.prodId===p.id);
-    const low = p.qty>0&&p.qty<=5;
-    return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" onclick="tapProd('${p.id}')">
-      <div class="pemoji">${prodVisualHtml(p)}</div>
-      <div class="pinfo">
-        <div class="pname">${p.name}</div>
-        <div class="pprice">${fmt(p.price)} ج/وحدة</div>
-        <div class="pavail">${p.qty===0?'<span style="color:var(--red)">نفد</span>':'متاح: '+p.qty+(low?' ⚠️':'')}</div>
-        ${off?`<div class="ptag">🎁 ${off.name}</div>`:''}
-      </div>
-      ${ci?`<div class="qpill">
-        <button onclick="event.stopPropagation();adjC('${p.id}',-1)">−</button>
-        <span>${ci.qty}</span>
-        <button onclick="event.stopPropagation();adjC('${p.id}',1)">+</button>
-      </div>`:`<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">${p.qty===0?'نفد':p.qty}</div>`}
-    </div>`;
-  }).join('') :
-  `<div style="text-align:center;padding:36px 0;color:var(--t3)"><div style="font-size:40px;margin-bottom:12px">📦</div><div style="font-size:14px">لا توجد أصناف<br>أضف بضاعة عند بدء اليوم</div></div>`;
-
-  pg.innerHTML=`
-  ${cartBar}
-  <div class="sec">
-    <div class="st">🛒 أصناف اليوم (${prods.length})
-      <span style="display:flex;gap:8px">
-        <span class="st-a" onclick="requireAdmin('إدارة أصناف اليوم',clearDayProducts)">تعديل/حذف 🔐</span>
-        <span class="st-a" onclick="go('more',document.querySelectorAll('.nb')[9])">⚙️ إعدادات</span>
-      </span>
-    </div>
-    ${warnHtml}${zeroHtml}
-    <input class="sbox" id="sell-search" placeholder="🔍 ابحث بالاسم..." oninput="filterSell(this.value)">
-    <div id="sell-list">${prodsHtml}</div>
-  </div>`;
+function sellSetQty(pid,val){
+  const p=vanFind(pid); if(!p) return;
+  let q=parseFloat(val)||0;
+  if(q>p.qty){ q=p.qty; toast('الكمية أكتر من المتاح','err'); }
+  const ci=cart.find(c=>c.prodId===pid);
+  if(q<=0) cart=cart.filter(c=>c.prodId!==pid);
+  else if(ci) ci.qty=q; else cart.push({prodId:pid,qty:q});
+  saveCart();
+  sellUpdateRow(pid);
 }
 
 function tapProd(pid){
-  const p=vanFind(pid); if(!p||p.qty===0)return;
-  if(!cart.find(c=>c.prodId===pid)) cart.push({prodId:pid,qty:1});
-  saveCart();
-  // Fix 1: Don't clear search — keep filtered list stable, just re-render list
-  const q=document.getElementById('sell-search')?.value||'';
-  r_sell();
-if(q){ document.getElementById('sell-search').value=q; filterSell(q); }
+  const p=vanFind(pid); if(!p||p.qty===0) return;
+  if(!cart.find(c=>c.prodId===pid)) sellSetQty(pid,1);
 }
 function adjC(pid,d){
-  const ci=cart.find(c=>c.prodId===pid);
-  const p=vanFind(pid);
-  if(!ci)return;
-  ci.qty=Math.max(0,Math.min(p?.qty||999,ci.qty+d));
-  if(ci.qty===0) cart=cart.filter(c=>c.prodId!==pid);
- saveCart();
-const q2=document.getElementById('sell-search')?.value||'';
-r_sell();
-if(q2){ document.getElementById('sell-search').value=q2; filterSell(q2); }
+  const ci=cart.find(c=>c.prodId===pid); if(!ci) return;
+  sellSetQty(pid, ci.qty+d);
 }
-function clearCart(){ cart=[]; activeInvOffer=null; saveCart(); r_sell(); }
+function clearCart(){ cart=[]; activeInvOffer=null; PRESET_CUST=''; saveCart(); sellRenderList(); sellUpdateBar(); }
 
-function filterSell(q){
-  const list=document.getElementById('sell-list'); if(!list)return;
-  const prods=VAN_STOCK.filter(p=>p.qty>0&&(!q||p.name.includes(q)||(p.name.toLowerCase().includes(q.toLowerCase()))));
-  list.innerHTML=prods.map(p=>{
-    const ci=cart.find(c=>c.prodId===p.id);
-    const off=OFFERS.find(o=>o.active&&o.prodId===p.id);
-    const low=p.qty>0&&p.qty<=5;
-    return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" onclick="tapProd('${p.id}')">
-      <div class="pemoji">${prodVisualHtml(p)}</div>
-      <div class="pinfo">
-        <div class="pname">${p.name}</div>
-        <div class="pprice">${fmt(p.price)} ج/وحدة</div>
-        <div class="pavail">${p.qty===0?'<span style="color:var(--red)">نفد</span>':'متاح: '+p.qty+(low?' ⚠️':'')}</div>
-        ${off?`<div class="ptag">🎁 ${off.name}</div>`:''}
-      </div>
-      ${ci?`<div class="qpill">
-        <button onclick="event.stopPropagation();adjC('${p.id}',-1)">−</button>
-        <span>${ci.qty}</span>
-        <button onclick="event.stopPropagation();adjC('${p.id}',1)">+</button>
-      </div>`:`<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">${p.qty===0?'نفد':p.qty}</div>`}
-    </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:14px">لا نتائج</div>';
-}
+function filterSell(q){ sellRenderList(); }
 
 // price calc with offers — overridePriceMap اختياري: لو موجود وفيه سعر
 // لصنف بعينه، بيغلب سعر العربية الأساسي (مستوى سعر العميل بدل مستوى
@@ -2166,6 +2196,63 @@ async function resolveCustPriceMap(custId){
   return LEVEL_PRICE_MAPS[cu.priceLevelCode];
 }
 
+
+// ══════════════════════════════════════════════════════════════════
+// ── اختيار عميل بالبحث (بدل القايمة الطويلة) ────────────────────────
+// بيتحط مكان <select> العميل في شاشة الدفع والتحصيل ومرتجع العميل. الـid بتاعه بيفضل
+// input مخفي (value = معرّف العميل أو '' للعابر أو '_new' لعميل جديد) علشان باقي الكود
+// يقرأ document.getElementById(id).value زي ما كان بيقرأ من الـselect بالظبط.
+// ══════════════════════════════════════════════════════════════════
+const CPK = {};   // id -> { list, special, onPick }
+function custBalanceOf(c){
+  const st = STORES.find(s=>s.id===c.id);
+  return (c.debt||0) + (st?.oldDebt||0);
+}
+function cpkHtml(id, placeholder){
+  return `<div class="cpk" style="position:relative">
+    <input type="text" class="ifield" id="cpk-${id}-q" placeholder="${placeholder}" autocomplete="off" oninput="cpkRender('${id}')" onfocus="cpkRender('${id}')" style="transition:.2s">
+    <input type="hidden" id="${id}" value="">
+    <div class="cpk-list" id="cpk-${id}-list" style="display:none"></div>
+  </div>`;
+}
+function cpkInit(id, list, special, onPick){
+  CPK[id] = { list: [...list].sort((a,b)=>(a.name||'').localeCompare(b.name||'','ar')), special: special||[], onPick };
+}
+function cpkRender(id){
+  const st = CPK[id]; const box = document.getElementById('cpk-'+id+'-list'); const qEl = document.getElementById('cpk-'+id+'-q');
+  if(!st || !box || !qEl) return;
+  const q = qEl.value.trim().toLowerCase();
+  const sp = st.special.filter(s=>!q || s.label.toLowerCase().includes(q));
+  const items = st.list.filter(c=>!q || (c.name||'').toLowerCase().includes(q) || (c.phone||'').includes(q)).slice(0,40);
+  box.innerHTML =
+    sp.map(s=>`<div class="cpk-item" onclick="cpkPick('${id}','${s.value}')"><b>${vlpEsc(s.label)}</b></div>`).join('') +
+    items.map(c=>{
+      const bal = custBalanceOf(c);
+      const star = c.priceLevelCode && REP && c.priceLevelCode!==REP.priceLevelCode ? ' ⭐' : '';
+      return `<div class="cpk-item" onclick="cpkPick('${id}','${c.id}')"><span><b>${vlpEsc(c.name)}</b>${star}${c.phone?`<small style="color:var(--t3);display:block">${vlpEsc(c.phone)}</small>`:''}</span>`
+        + `<span class="cpk-bal ${bal>0?'d':''}">${bal>0?fmt(bal)+' ج':'—'}</span></div>`;
+    }).join('') ||
+    '<div style="padding:12px;text-align:center;color:var(--t3);font-size:13px">لا نتائج</div>';
+  box.style.display = 'block';
+}
+function cpkPick(id, value){
+  const st = CPK[id]; if(!st) return;
+  const hid = document.getElementById(id), qEl = document.getElementById('cpk-'+id+'-q'), box = document.getElementById('cpk-'+id+'-list');
+  if(hid) hid.value = value;
+  const sp = st.special.find(s=>s.value===value);
+  const c = st.list.find(x=>x.id===value);
+  if(qEl) qEl.value = sp ? (value ? '' : '') : (c?.name||'');
+  if(qEl) qEl.placeholder = sp ? (value ? '' : sp.label) : qEl.placeholder;
+  if(sp && value==='_new' && qEl){ qEl.value = ''; qEl.placeholder = '+ عميل جديد'; }
+  if(box) box.style.display = 'none';
+  if(st.onPick) st.onPick(value);
+}
+// أي ضغطة برّه الاختيار تقفل القايمة
+document.addEventListener('click', e=>{
+  if(!e.target.closest || e.target.closest('.cpk')) return;
+  document.querySelectorAll('.cpk-list').forEach(b=>b.style.display='none');
+});
+
 // ── CHECKOUT ──────────────────────────────────────────────────────
 let _checkoutCustId = '';
 function buildCheckoutPricing(overrideMap){
@@ -2203,7 +2290,7 @@ function openCheckout(){
     });
     invHtml+='</div>';
   }
-  const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${c.debt>0?' ('+fmt(c.debt)+' ج)':''}${c.priceLevelCode&&c.priceLevelCode!==REP.priceLevelCode?' ⭐':''}</option>`).join('');
+  cpkInit('ck-cust', CUSTOMERS, [{value:'',label:'عميل عابر (نقدي فقط)'},{value:'_new',label:'+ عميل جديد'}], ()=>onCustSel());
 
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -2218,28 +2305,69 @@ function openCheckout(){
     </div>
     <div class="ig">
       <div class="il">العميل ${`<span style="color:var(--orange);font-size:12px">(مطلوب للآجل)</span>`}</div>
-      <select id="ck-cust" class="ifield" onchange="onCustSel()" style="transition:.2s">
-        <option value="">عميل عابر (نقدي فقط)</option>
-        ${custOpts}
-        <option value="_new">+ عميل جديد</option>
-      </select>
+      ${cpkHtml('ck-cust','🔍 عميل عابر (نقدي) — اكتب للبحث عن عميل')}
       <div id="ck-level-note" style="display:none;font-size:12px;color:var(--gold);margin-top:5px">⭐ الأسعار دي على مستوى سعر العميل الخاص</div>
     </div>
     <div id="new-cust-row" style="display:none;margin-bottom:10px">
       <input type="text" id="new-cust-n" class="ifield" placeholder="اسم العميل *" style="margin-bottom:6px">
       <input type="tel" id="new-cust-phone" class="ifield" placeholder="رقم التليفون (اختياري)">
     </div>
+    <div id="ck-credit"></div>
+    <div id="ck-paid-row" class="ig" style="display:none">
+      <div class="il">💵 مدفوع كاش الآن <span style="color:var(--t3);font-size:12px">(للآجل بس — اختياري، الباقي يتسجل آجل)</span></div>
+      <input type="number" inputmode="decimal" min="0" id="ck-paid" class="ifield" placeholder="0">
+      <div class="il" style="margin-top:8px">📅 ميعاد سداد الآجل <span style="color:var(--t3);font-size:12px">(بعد كام يوم)</span></div>
+      <div style="display:flex;align-items:center;gap:8px"><input type="number" inputmode="numeric" min="1" max="90" id="ck-due" class="ifield" value="7" style="width:90px" oninput="ckDueLabel()"><span id="ck-due-lbl" style="font-size:12.5px;color:var(--t2)"></span></div>
+    </div>
+    <div id="ck-old-row" class="ig" style="display:none">
+      <div class="il">💰 تحصيل من رصيده القديم الآن <span style="color:var(--t3);font-size:12px">(اختياري)</span></div>
+      <input type="number" inputmode="decimal" min="0" id="ck-oldcol" class="ifield" placeholder="0">
+    </div>
+    <div class="ig">
+      <input type="text" id="ck-note" class="ifield" maxlength="200" placeholder="📝 ملاحظة على الفاتورة (اختياري)">
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <button id="btn-cash" class="btn btn-g btn-xl" onclick="doSell(false)">نقدي 💵</button>
       <button id="btn-debt" class="btn btn-gold btn-xl" onclick="doSell(true)">آجل 📋</button>
     </div>`);
   window._checkoutBase=base; window._checkoutDisc=disc;
+  if(PRESET_CUST && CUSTOMERS.some(c=>c.id===PRESET_CUST)) cpkPick('ck-cust', PRESET_CUST);   // اختار العميل من الكارت
+}
+// رصيد العميل والحد الائتماني تحت اختيار العميل، وخانة "مدفوع كاش" بتظهر لما يكون فيه عميل
+function ckUpdateCustInfo(v){
+  const info=document.getElementById('ck-credit'), paidRow=document.getElementById('ck-paid-row');
+  if(paidRow) paidRow.style.display = v ? 'block' : 'none';
+  ckDueLabel();
+  const cu = (v && v!=='_new') ? CUSTOMERS.find(x=>x.id===v) : null;
+  const oldRow=document.getElementById('ck-old-row');
+  if(oldRow) oldRow.style.display = (cu && custBalanceOf(cu)>0) ? 'block' : 'none';
+  if(!info) return;
+  if(!cu){ info.innerHTML=''; return; }
+  const bal=custBalanceOf(cu), limit=cu.creditLimit||0;
+  let h=`رصيده الحالي: <b>${fmt(bal)} ج</b>`;
+  if(limit>0){
+    const left=limit-bal;
+    h+=` — الحد الائتماني ${fmt(limit)} ج — المتبقي <b style="color:${left>0?'var(--g)':'var(--red)'}">${fmt(Math.max(0,left))} ج</b>`;
+  }
+  info.innerHTML=`<div style="font-size:12.5px;color:var(--t2);background:var(--bg3);border-radius:10px;padding:8px 11px;margin:-4px 0 10px">${h}</div>`;
+}
+// تاريخ الاستحقاق = يوم الفاتورة (بتوقيت القاهرة) + عدد الأيام
+function dueDateStr(ts, days){
+  const d=new Date(new Date(ts).toLocaleString('en-US',{timeZone:'Africa/Cairo'}));
+  d.setDate(d.getDate()+days);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function ckDueLabel(){
+  const el=document.getElementById('ck-due-lbl'); if(!el) return;
+  const n=Math.max(1,Math.min(90,parseInt(document.getElementById('ck-due')?.value)||7));
+  el.textContent='يستحق: '+dueDateStr(Date.now(),n);
 }
 function togInvOff(id){ activeInvOffer=activeInvOffer===id?null:id; openCheckout(); }
 async function onCustSel(){
   const v=document.getElementById('ck-cust')?.value;
   document.getElementById('new-cust-row').style.display=v==='_new'?'block':'none';
   _checkoutCustId = v;
+  ckUpdateCustInfo(v);
   // قفل زراير الدفع أثناء جلب سعر مستوى العميل (لو محتاج) عشان محدش يدفع
   // بسعر قديم فى نص اللحظة اللي بتاخدها المكالمة
   const btnC=document.getElementById('btn-cash'), btnD=document.getElementById('btn-debt');
@@ -2266,7 +2394,7 @@ function doSell(isDebt){
     const newName=document.getElementById('new-cust-n')?.value.trim();
     if(!custSel && !newName){
       // Flash the customer select in red
-      const sel=document.getElementById('ck-cust');
+      const sel=document.getElementById('cpk-ck-cust-q');
       if(sel){ sel.style.borderColor='var(--red)'; setTimeout(()=>sel.style.borderColor='',2000); }
       toast('⚠️ الآجل يحتاج اسم العميل — اختر عميل أو اكتب اسم جديد','err');
       return;
@@ -2276,6 +2404,21 @@ function doSell(isDebt){
       if(inp){ inp.style.borderColor='var(--red)'; inp.focus(); setTimeout(()=>inp.style.borderColor='',2000); }
       toast('⚠️ اكتب اسم العميل الجديد','err');
       return;
+    }
+
+    // ── المدفوع كاش لازم يكون أقل من إجمالي الفاتورة (غير كده يبقى نقدي) ──
+    const totalNow=(window._checkoutBase||0)-(window._checkoutDisc||0);
+    const paidNow=parseFloat(document.getElementById('ck-paid')?.value)||0;
+    if(paidNow<0){ toast('المبلغ المدفوع غلط','err'); return; }
+    if(paidNow>0 && paidNow>=totalNow){ toast('المدفوع بقى كل الفاتورة — اضغط "نقدي" بدل آجل','err'); return; }
+
+    // ── تنبيه الحد الائتماني (تحذير بس — اللي مقفول آجله ليه خطوة تصريح تحت) ──
+    if(custSel && custSel!=='_new'){
+      const cu0=CUSTOMERS.find(x=>x.id===custSel);
+      if(cu0 && !cu0.debtLocked && cu0.creditLimit>0){
+        const over=custBalanceOf(cu0)+(totalNow-paidNow)-cu0.creditLimit;
+        if(over>0 && !confirm(`⚠️ الفاتورة دي هتخلّي ${cu0.name} يعدّي حده الائتماني بـ ${fmt(over)} ج.\nتكمّل آجل برضه؟`)) return;
+      }
     }
 
     // ── قفل بيع الآجل لعملاء معينين ───────────────────────────────
@@ -2330,6 +2473,11 @@ function executeSell(isDebt){
     if(c.qty+gq>p.qty){ toast(`الكمية أكثر من المتاح: ${p.name} — أعد فتح السلة وتأكد من الكمية`,'err'); sellLock=false; return; }
   }
 
+  // دفعة كاش مع فاتورة آجل + ملاحظة الفاتورة
+  const invNote=(document.getElementById('ck-note')?.value||'').trim().slice(0,200);
+  const dueDays=isDebt ? Math.max(1,Math.min(90,parseInt(document.getElementById('ck-due')?.value)||7)) : 0;
+  const paid=(isDebt && custId) ? Math.max(0, Math.min(parseFloat(document.getElementById('ck-paid')?.value)||0, (window._checkoutBase||0)-(window._checkoutDisc||0))) : 0;
+
   let billT=0;
   const syncItems=[];
   cart.forEach(c=>{
@@ -2339,7 +2487,7 @@ function executeSell(isDebt){
     p.qty-=c.qty+gq;
     billT+=total;
     if(isDebt&&custId){const cu=CUSTOMERS.find(x=>x.id===custId);if(cu)cu.debt=(cu.debt||0)+total;}
-    CDAY.sales.push({id:uid(),prodId:p.id,name:p.name,emoji:p.emoji,qty:c.qty,giftQty:gq,unit,total,custName,custId,debt:isDebt,ts:Date.now(),invoiceId,void:false});
+    CDAY.sales.push({id:uid(),prodId:p.id,name:p.name,emoji:p.emoji,qty:c.qty,giftQty:gq,unit,total,custName,custId,debt:isDebt,ts:Date.now(),invoiceId,void:false,paidNow:paid||undefined,note:invNote||undefined});
     syncItems.push({productId:p.id, qty:c.qty, unitPrice:unit, lineTotal:total, freeQty:gq, costPrice:Number(p.cost)||0});
   });
 
@@ -2361,8 +2509,35 @@ function executeSell(isDebt){
       : (CUSTOMERS.find(x=>x.id===custId)?.phone||'');
     queueSync('sale', {
       invoiceId, custId: custId||null, custName, custPhone, isDebt,
-      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(),
+      items: syncItems, subtotal: billT, discount: discAmt, total: finalT, ts: Date.now(), note: invNote, dueDays,
     });
+  }
+  // الدفعة الكاش: تحصيل عادي من العميل (بينزل من رصيده وبيدخل خزنة المندوب) بعد الفاتورة فى الطابور
+  // تحصيل من الرصيد القديم فى نفس اللحظة (بحد أقصى الرصيد اللي كان على العميل قبل الفاتورة دي)
+  const oldColReq=parseFloat(document.getElementById('ck-oldcol')?.value)||0;
+  if(oldColReq>0 && custId){
+    const cuO=CUSTOMERS.find(x=>x.id===custId), stO=STORES.find(s=>s.id===custId);
+    const priorBal=(stO?.oldDebt||0)+Math.max(0,(cuO?.debt||0)-(isDebt?billT:0));
+    const amtO=Math.min(oldColReq, priorBal);
+    if(amtO>0){
+      let rem=amtO;
+      if(stO&&stO.oldDebt>0){ const f=Math.min(rem,stO.oldDebt); stO.oldDebt-=f; rem-=f; LS.s('stores',STORES); }
+      if(cuO&&rem>0){ cuO.debt=Math.max(0,(cuO.debt||0)-rem); LS.s('customers',CUSTOMERS); }
+      const colTs2=Date.now()+2;
+      CDAY.collections.push({id:uid(),custName,custId,amt:amtO,ts:colTs2,invoiceId,note:'تحصيل رصيد قديم مع الفاتورة'});
+      saveDay();
+      if(REP) queueSync('collection', {custId, custName, amt:amtO, ts:colTs2});
+      tgCollect(custName||'عميل', amtO);
+    }
+  }
+  if(paid>0){
+    const cuP=CUSTOMERS.find(x=>x.id===custId);
+    if(cuP){ cuP.debt=Math.max(0,(cuP.debt||0)-paid); LS.s('customers',CUSTOMERS); }
+    const colTs=Date.now()+1;
+    CDAY.collections.push({id:uid(),custName,custId,amt:paid,ts:colTs,invoiceId,note:'دفعة مع الفاتورة'});
+    saveDay();
+    if(REP) queueSync('collection', {custId, custName, amt:paid, ts:colTs});
+    tgCollect(custName||'عميل', paid);
   }
   // Telegram notification
   const saleLines = cart.map(c=>{
@@ -2371,9 +2546,10 @@ function executeSell(isDebt){
     return {emoji:p?.emoji||'📦',name:p?.name||'',qty:c.qty,total};
   });
   tgSale(saleLines, custName, finalT, isDebt, invoiceId, custId);
-  activeInvOffer=null; cart=[]; saveCart();
+  activeInvOffer=null; cart=[]; saveCart(); PRESET_CUST=''; if(custId) delete _csCache[custId];
   closeModal();
-  toast(`✅ فاتورة ${fmt(finalT)} ج — ${isDebt?'آجل':'نقدي'}`);
+  toast(`✅ فاتورة ${fmt(finalT)} ج — ${isDebt?(paid>0?`آجل (مدفوع ${fmt(paid)})`:'آجل'):'نقدي'}`);
+  showSaleDoneBar(invoiceId, finalT);
   r_sell();
   if(document.getElementById('pg-van')?.classList.contains('on')) r_van();
   sellLock=false;
@@ -2463,33 +2639,11 @@ function r_ledger(){
   <div class="sec">
     <div class="st">🔵 تسجيل تحصيل</div>
     <div class="ig"><div class="il">العميل</div>
-      <select id="col-cust" class="ifield"><option value="">اختر العميل</option>
-      ${CUSTOMERS.filter(c=>{
-        const store=STORES.find(s=>s.id===c.id);
-        return (c.debt||0)+(store?.oldDebt||0)>0;
-      }).map(c=>{
-        const store=STORES.find(s=>s.id===c.id);
-        const total=(c.debt||0)+(store?.oldDebt||0);
-        return `<option value="${c.id}">${c.name} — ${fmt(total)} ج</option>`;
-      }).join('')}
-      </select>
+      ${(cpkInit('col-cust', CUSTOMERS.filter(c=>custBalanceOf(c)>0), []),'')}
+      ${cpkHtml('col-cust','🔍 اختر العميل — اكتب للبحث')}
     </div>
     <div class="ig" style="margin-bottom:10px"><div class="il">المبلغ</div><input type="number" id="col-amt" class="ifield" placeholder="0"></div>
     <button class="btn btn-teal btn-lg" onclick="doCollect()">✓ تسجيل تحصيل</button>
-  </div>
-  <div class="sec">
-    <button class="btn btn-o btn-lg" style="width:100%" onclick="showOldDebtsPage()">💰 الديون القديمة ←</button>
-  </div>
-  <div class="sec">
-    <div class="st">💵 العهدة</div>
-    <div class="al al-gold" style="margin-bottom:10px">العهدة الحالية: <b>${fmt(CDAY?.startCash||0)} ج</b></div>
-    <button class="btn btn-gold btn-lg" style="width:100%" onclick="showAddMidCash()">➕ إضافة عهدة في منتصف اليوم</button>
-  </div>
-  <div class="sec">
-    <div class="st">💸 توريد للخزنة 🔐</div>
-    <div class="ig"><div class="il">المبلغ</div><input type="number" id="dep-amt" class="ifield" placeholder="0"></div>
-    <div class="ig" style="margin-bottom:10px"><div class="il">ملاحظة</div><input type="text" id="dep-note" class="ifield" placeholder="اختياري"></div>
-    <button class="btn btn-adm btn-lg" onclick="requireAdmin('تأكيد توريد نقدية',doDeposit)">توريد للخزنة 💸 🔐</button>
   </div>
   <div class="sec">
     <div class="st">🛒 مصروف</div>
@@ -2551,7 +2705,7 @@ function showCashBrief(){
     <div style="text-align:center;padding:10px 0 20px">
       <div style="font-size:14px;color:var(--admin);font-weight:700;margin-bottom:16px">💵 إجمالي الفلوس في الإيد</div>
       <div style="font-size:52px;font-weight:900;color:var(--g)">${fmt(s.expected)} ج</div>
-      <div style="font-size:13px;color:var(--t2);margin-top:8px">عهدة: ${fmt(CDAY.startCash)} + نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
+      <div style="font-size:13px;color:var(--t2);margin-top:8px">نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
       <div style="font-size:11px;color:var(--t3);margin-top:4px">(ده حساب مبني على حركاتك النهارده بس)</div>
       <div style="margin-top:18px;padding-top:16px;border-top:1px dashed var(--bdr)">
         <div style="font-size:12.5px;color:var(--t2);margin-bottom:6px">🏦 الرصيد الفعلي في خزنتك على سلطان الآن</div>
@@ -2620,6 +2774,7 @@ function showVoidList(){
 }
 
 function showSoftDeleteInvoice(invId){
+  if(invHasPartPayment(invId)){ toast('الفاتورة دي فيها دفعة كاش اتسجلت معاها — الإلغاء من البرنامج الرئيسي','err'); return; }
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div style="font-size:16px;font-weight:900;color:var(--red)">🚫 إلغاء فاتورة</div>
@@ -2736,7 +2891,14 @@ async function reconcileCancelledInvoices(){
   }catch(e){ /* أوفلاين أو خطأ مؤقت — هيتحقق تاني المرة الجاية */ }
 }
 
+// فاتورة آجل اتدفع جزء منها كاش وقت البيع: التحصيل متسجل منفصل، فإلغاء/تعديل الفاتورة هنا
+// هيسيب الدفعة من غير فاتورة. فبنمنعه من التطبيق ويتعمل من البرنامج الرئيسي.
+function invHasPartPayment(invId){
+  const all=[...(CDAY?.sales||[]), ...Object.values(DAYS).flatMap(d=>d.sales||[])];
+  return all.some(s=>s.invoiceId===invId && s.paidNow>0);
+}
 function showEditInvoice(invId){
+  if(invHasPartPayment(invId)){ toast('الفاتورة دي فيها دفعة كاش اتسجلت معاها — التعديل من البرنامج الرئيسي','err'); return; }
   const invLines=(CDAY?.sales||[]).filter(s=>s.invoiceId===invId&&!s.void&&s.qty>0);
   if(!invLines.length){toast('لا توجد بنود قابلة للتعديل','err');return;}
   const invTs=invLines[0].ts;
@@ -2808,59 +2970,6 @@ function doCollect(){
   toast(`✅ تحصيل ${fmt(amt)} ج`); r_ledger();
 }
 
-// ── إضافة عهدة في منتصف اليوم ─────────────────────────────────────
-function showAddMidCash(){
-  if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900;color:var(--gold)">💵 إضافة عهدة</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-gold" style="margin-bottom:14px">
-      العهدة الحالية: <b>${fmt(CDAY.startCash)} ج</b>
-    </div>
-    <div class="ig"><div class="il">المبلغ المضاف (ج)</div>
-      <input type="number" id="mid-cash-amt" class="ifield" placeholder="مثال: 200">
-    </div>
-    <div class="ig" style="margin-bottom:14px"><div class="il">ملاحظة</div>
-      <input type="text" id="mid-cash-note" class="ifield" placeholder="مثال: عهدة إضافية من المدير">
-    </div>
-    <button class="btn btn-gold btn-xl" onclick="confirmAddMidCash()">إضافة العهدة 💵</button>`);
-}
-
-function confirmAddMidCash(){
-  const amt=parseFloat(document.getElementById('mid-cash-amt')?.value)||0;
-  const note=document.getElementById('mid-cash-note')?.value.trim()||'عهدة إضافية';
-  if(amt<=0){toast('أدخل المبلغ','err');return;}
-  CDAY.startCash=(CDAY.startCash||0)+amt;
-  // Log it as a special deposit record
-  CDAY.deposits=CDAY.deposits||[];
-  CDAY.midCashLog=CDAY.midCashLog||[];
-CDAY.midCashLog.push({id:uid(),amt,note,ts:Date.now()});
-  saveDay();
-  auditLog('إضافة عهدة',`${fmt(amt)} ج — ${note}`);
-  TG.notify(tgHeader('💵','إضافة عهدة')+`
-💵 <b>${fmt(amt)} ج</b>
-📝 ${note}`);
-  closeModal();
-  toast(`✅ تم إضافة عهدة ${fmt(amt)} ج`);
-  r_ledger();
-}
-
-function doDeposit(){
-  const amt=parseFloat(document.getElementById('dep-amt')?.value)||0;
-  const note=document.getElementById('dep-note')?.value.trim();
-  if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
-  if(amt<=0){toast('أدخل المبلغ','err');return;}
-  const depTs=Date.now();
-  CDAY.deposits.push({id:uid(),amt,note,ts:depTs});
-  auditLog('توريد خزنة',`${fmt(amt)} ج`);
-  tgDeposit(amt);
-  saveDay(); toast(`💸 تم التوريد ${fmt(amt)} ج`); r_ledger();
-  // ★ مزامنة حقيقية مع سلطان — التوريد ده فلوس حقيقية بتتحرك من خزنة
-  // المندوب للخزنة الرئيسية، لازم سلطان يعرف بيها زي أي حركة مالية تانية
-  if(REP) queueSync('deposit', {amt, note, ts:depTs});
-}
 function doExpense(){
   const cat=document.getElementById('exp-cat')?.value;
   const amt=parseFloat(document.getElementById('exp-amt')?.value)||0;
@@ -2929,6 +3038,22 @@ function showInvoiceActions(invoiceId){
     <button class="btn btn-b btn-xl" onclick="printInvoice('${invoiceId}')">🖨️ طباعة الفاتورة</button>`);
 }
 
+// شريط صغير بعد البيع (٩ ثواني): زرار واحد لإرسال الفاتورة واتساب/طباعتها، من غير ما يعطّل البيع اللي بعده
+function showSaleDoneBar(invoiceId, total){
+  let el=document.getElementById('sale-done');
+  if(!el){
+    el=document.createElement('div'); el.id='sale-done';
+    el.style.cssText='position:fixed;left:10px;right:10px;bottom:76px;z-index:60;background:var(--bg2,#1a1a1a);border:1px solid var(--g);border-radius:14px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:13.5px';
+    document.body.appendChild(el);
+  }
+  el.innerHTML=`<span>✅ فاتورة ${fmt(total)} ج</span>
+    <span style="display:flex;gap:6px"><button class="btn btn-g" style="font-size:13px;padding:8px 12px" onclick="hideSaleDoneBar();showInvoiceActions('${invoiceId}')">📲 إرسال / 🖨️ طباعة</button>
+    <button class="btn btn-b" style="font-size:13px;padding:8px 10px" onclick="hideSaleDoneBar()">✕</button></span>`;
+  el.style.display='flex';
+  clearTimeout(el._t); el._t=setTimeout(hideSaleDoneBar,9000);
+}
+function hideSaleDoneBar(){ const el=document.getElementById('sale-done'); if(el) el.style.display='none'; }
+
 function sendInvoiceWA(invoiceId){
   const phone=document.getElementById('inv-wa-phone')?.value.trim().replace(/^0/,'20');
   const inv={lines:[],custName:'',total:0,debt:false};
@@ -2977,134 +3102,159 @@ function printInvoice(invoiceId){
 }
 
 
-// ══════════════════════════════════════════════════════════════════
-// CUSTOMERS PAGE
-// ══════════════════════════════════════════════════════════════════
-function r_customers(){
-  const totalDebt=CUSTOMERS.reduce((a,c)=>{
-    const store=STORES.find(s=>s.id===c.id);
-    return a+(c.debt||0)+(store?.oldDebt||0);
-  },0);
-  const collectedTodayIds = new Set((CDAY?.collections||[]).map(c=>c.custId));
-  const withBalance = CUSTOMERS.filter(c=>{
-    const store=STORES.find(s=>s.id===c.id);
-    return (c.debt||0)+(store?.oldDebt||0) > 0;
-  });
-  const pendingCount   = withBalance.filter(c=>!collectedTodayIds.has(c.id)).length;
-  const collectedCount = withBalance.filter(c=>collectedTodayIds.has(c.id)).length;
-
-  document.getElementById('pg-customers').innerHTML=`
-  <div class="g2" style="margin-bottom:12px">
-    <div class="kcard"><div class="kc-val cb">${CUSTOMERS.length}</div><div class="kc-lbl">إجمالي العملاء</div></div>
-    <div class="kcard"><div class="kc-val cr">${fmt(totalDebt)}</div><div class="kc-lbl">إجمالي المديونية ج</div></div>
-  </div>
-  <input class="sbox" placeholder="🔍 ابحث عن عميل..." oninput="filterCustomers(this.value)" id="cust-search" value="${CUST_SEARCH_Q||''}">
-  <div style="display:flex;gap:8px;margin:10px 0">
-    <button class="btn ${CUST_TAB==='pending'?'btn-o':'btn-b'}" style="flex:1;font-size:13px;padding:9px 4px" onclick="switchCustTab('pending')">🔴 عليهم ديون (${pendingCount})</button>
-    <button class="btn ${CUST_TAB==='collected'?'btn-g':'btn-b'}" style="flex:1;font-size:13px;padding:9px 4px" onclick="switchCustTab('collected')">✅ اتحصّل منهم النهاردة (${collectedCount})</button>
-  </div>
-  <div id="cust-list"></div>`;
-  renderCustList();
+// ── أزرار سريعة على كارت العميل: بيع / تحصيل / مرتجع / اتصال / واتساب / خريطة ──
+function custActionsHtml(id){
+  const cu=CUSTOMERS.find(c=>c.id===id), st=STORES.find(s=>s.id===id);
+  const phone=String(cu?.phone||st?.phone||'').trim();
+  const wa=phone?'https://wa.me/2'+phone.replace(/\D/g,'').replace(/^0/,''):'';
+  const b='font-size:12px;padding:8px 2px;flex:1;min-width:0;text-align:center;text-decoration:none';
+  return `<div style="display:flex;gap:5px;margin:8px 0" onclick="event.stopPropagation()">
+    <button class="btn btn-g" style="${b}" onclick="custGoSell('${id}')">🛒 بيع</button>
+    <button class="btn btn-teal" style="${b}" onclick="custGoCollect('${id}')">💰 تحصيل</button>
+    <button class="btn btn-b" style="${b}" onclick="custGoReturn('${id}')">↩️ مرتجع</button>
+    ${phone?`<a class="btn btn-b" style="${b}" href="tel:${phone}">📞</a><button class="btn btn-b" style="${b}" onclick="window.open('${wa}','_blank')">📲</button>`:''}
+    ${st?.lat?`<button class="btn btn-blue" style="${b}" onclick="openMaps(${st.lat},${st.lng})">🗺️</button>`:''}
+  </div>`;
+}
+function custGoSell(id){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  closeModal();
+  PRESET_CUST=id;
+  if(cart.length){ openCheckout(); return; }
+  go('sell', document.querySelectorAll('.nb')[0]);
+  toast('اختار الأصناف وبعدين ادفع — العميل متحدد');
+}
+function custGoCollect(id){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  const c=CUSTOMERS.find(x=>x.id===id);
+  if(!c || custBalanceOf(c)<=0){ toast('مفيش رصيد على العميل ده','err'); return; }
+  closeModal();
+  go('ledger', document.querySelectorAll('.nb')[1]);
+  cpkPick('col-cust', id);
+  const amt=document.getElementById('col-amt');
+  if(amt){ amt.scrollIntoView({block:'center'}); amt.focus(); }
+}
+function custGoReturn(id){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  closeModal();
+  showCustomerReturn();
+  cpkPick('cr-cust', id);
 }
 
-function switchCustTab(tab){ CUST_TAB=tab; r_customers(); }
-
-function custListSource(){
-  const collectedTodayIds = new Set((CDAY?.collections||[]).map(c=>c.custId));
-  const withBalance = CUSTOMERS.filter(c=>{
-    const store=STORES.find(s=>s.id===c.id);
-    return (c.debt||0)+(store?.oldDebt||0) > 0;
-  });
-  if(CUST_TAB==='collected') return withBalance.filter(c=>collectedTodayIds.has(c.id));
-  const pending = withBalance.filter(c=>!collectedTodayIds.has(c.id));
-  const zero = CUSTOMERS.filter(c=>!withBalance.includes(c));
-  return [...pending, ...zero];
-}
-
-function renderCustList(){
-  let list = custListSource();
-  if(CUST_SEARCH_Q) list = list.filter(c=>c.name.includes(CUST_SEARCH_Q)||c.phone?.includes(CUST_SEARCH_Q));
-  list = [...list].sort((a,b)=>{
-    const da=(b.debt||0)+(STORES.find(s=>s.id===b.id)?.oldDebt||0);
-    const db=(a.debt||0)+(STORES.find(s=>s.id===a.id)?.oldDebt||0);
-    return da-db;
-  });
-  const el=document.getElementById('cust-list'); if(!el) return;
-  el.innerHTML = list.map(cust=>{
-    const store=STORES.find(s=>s.id===cust.id);
-    const totalCustDebt=(cust.debt||0)+(store?.oldDebt||0);
-    const allSales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===cust.id&&!s.void&&s.total>0);
-    const totalBought=allSales.reduce((a,s)=>a+s.total,0);
-    const lockBadge = cust.debtLocked ? '<span class="bdg br2" style="margin-right:6px">🔒 آجل مقفول</span>' : '';
-    return `<div class="scard" style="cursor:pointer" onclick="showCustStatement('${cust.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div style="flex:1">
-          <div style="font-size:15px;font-weight:900">${cust.name} ${lockBadge}</div>
-          ${cust.phone?`<div style="font-size:12px;color:var(--blue);margin-top:2px">📞 ${cust.phone}</div>`:''}
-          ${store?.address?`<div style="font-size:12px;color:var(--t3)">📍 ${store.address}</div>`:''}
-          <div style="font-size:12px;color:var(--t2);margin-top:3px">إجمالي المشتريات: ${fmt(totalBought)} ج</div>
-        </div>
-        <div style="text-align:center;flex-shrink:0">
-          <div style="font-size:18px;font-weight:900;color:${totalCustDebt>0?'var(--red)':'var(--g)'}">${fmt(totalCustDebt)}</div>
-          <div style="font-size:11px;color:var(--t2)">رصيد ج</div>
-        </div>
-      </div>
-    </div>`;
-  }).join('')||`<div style="color:var(--t3);text-align:center;padding:20px">${CUST_TAB==='collected'?'مفيش حد اتحصل منه النهاردة لسه':'لا توجد عملاء'}</div>`;
-}
-
-function filterCustomers(q){
-  CUST_SEARCH_Q = q;
-  renderCustList();
-}
-
+// ── كشف حساب العميل: من سيرفر سلطان (فواتير + تحصيلات)، مش من سجل التليفون ──
+const _csCache = {};   // custId -> { invoices, top }
 function showCustStatement(custId){
   const cust=CUSTOMERS.find(c=>c.id===custId);
-  const store=STORES.find(s=>s.id===custId);
   if(!cust) return;
-  const allSales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===custId&&!s.void&&s.total>0);
-  const allCollect=Object.values(DAYS).flatMap(d=>d.collections||[]).filter(c=>c.custId===custId);
-  const totalBought=allSales.reduce((a,s)=>a+s.total,0);
-  const totalCollected=allCollect.reduce((a,c)=>a+c.amt,0);
-  const newDebt=cust.debt||0;
-  const oldDebt=store?.oldDebt||0;
-  const totalDebt=newDebt+oldDebt;
-
-  const salesRows=allSales.sort((a,b)=>b.ts-a.ts).slice(0,20).map(s=>`
-    <div class="row">
-      <span class="rl" style="font-size:13px">${s.emoji||'📦'} ${s.name} ×${s.qty} — ${new Date(s.ts).toLocaleDateString('ar-EG')}</span>
-      <span class="rv cg" style="font-size:13px">${fmt(s.total)} ج</span>
-    </div>`).join('');
-
-  const collectRows=allCollect.sort((a,b)=>b.ts-a.ts).slice(0,10).map(c=>`
-    <div class="row">
-      <span class="rl" style="font-size:13px">💰 تحصيل — ${new Date(c.ts).toLocaleDateString('ar-EG')}</span>
-      <span class="rv ct" style="font-size:13px">${fmt(c.amt)} ج</span>
-    </div>`).join('');
-
+  const store=STORES.find(s=>s.id===custId);
+  const bal=custBalanceOf(cust);
   openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">${cust.name}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="font-size:16px;font-weight:900">${vlpEsc(cust.name)}</div>
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
-    ${cust.phone?`<div style="margin-bottom:8px"><a href="tel:${cust.phone}" style="color:var(--blue);font-size:14px">📞 ${cust.phone}</a>
-    <button onclick="window.open('https://wa.me/2${cust.phone.replace(/^0/,'')}','_blank')" class="btn btn-g" style="margin-right:8px;font-size:12px;padding:6px 12px">📲 واتساب</button></div>`:''}
-    ${store?.address?`<div style="font-size:13px;color:var(--t3);margin-bottom:10px">📍 ${store.address}</div>`:''}
-    <div class="g3" style="margin-bottom:12px">
-      <div class="kcard"><div class="kc-val cg">${fmt(totalBought)}</div><div class="kc-lbl">مشتريات ج</div></div>
-      <div class="kcard"><div class="kc-val ct">${fmt(totalCollected)}</div><div class="kc-lbl">محصّل ج</div></div>
-      <div class="kcard"><div class="kc-val ${totalDebt>0?'cr':'cg'}">${fmt(totalDebt)}</div><div class="kc-lbl">رصيد ج</div></div>
+    ${store?.address?`<div style="font-size:13px;color:var(--t3);margin-bottom:6px">📍 ${vlpEsc(store.address)}</div>`:''}
+    ${custActionsHtml(custId)}
+    <div class="g2" style="margin-bottom:12px">
+      <div class="kcard"><div class="kc-val ${bal>0?'cr':'cg'}">${fmt(bal)}</div><div class="kc-lbl">الرصيد ج</div></div>
+      <div class="kcard"><div class="kc-val cb">${cust.creditLimit>0?fmt(cust.creditLimit):'—'}</div><div class="kc-lbl">الحد الائتماني ج</div></div>
     </div>
-    ${oldDebt>0?`<div class="al al-o" style="margin-bottom:10px">دين قديم: ${fmt(oldDebt)} ج</div>`:''}
-    <div class="sec" style="margin-bottom:10px">
-      <div class="st">آخر المشتريات</div>
-      ${salesRows||'<div style="color:var(--t3);text-align:center;padding:10px">لا مشتريات</div>'}
-    </div>
-    ${collectRows?`<div class="sec"><div class="st">التحصيلات</div>${collectRows}</div>`:''}
-    <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-teal btn-xl" style="flex:1" onclick="closeModal();document.querySelectorAll('.nb')[1].click()">💰 تسجيل تحصيل</button>
-      <button class="btn btn-b btn-xl" style="flex:1" onclick="editCustomer('${custId}')">✏️ تعديل بيانات</button>
-    </div>`);
+    <div id="cs-body"><div style="text-align:center;color:var(--t3);padding:18px;font-size:13px">⏳ بجيب الكشف من البرنامج الرئيسي...</div></div>
+    <button class="btn btn-b btn-xl" style="width:100%;margin-top:10px" onclick="editCustomer('${custId}')">✏️ تعديل بيانات</button>`);
+  csLoad(custId);
+}
+async function csLoad(custId){
+  const body=()=>document.getElementById('cs-body');
+  if(!REP || !isRealSultanId(custId) || !navigator.onLine){
+    if(body()) body().innerHTML=`<div class="al al-o" style="font-size:12.5px">${!navigator.onLine?'مفيش نت — ':''}الكشف الكامل بيظهر لما تتصل بالنت ويكون العميل متزامن من سلطان.</div>`+csLocalHtml(custId);
+    return;
+  }
+  try{
+    const [inv, pay] = await Promise.all([
+      sb.from('sales').select('id,invoice_no,created_at,total,payment_type,notes,sale_items(product_id,qty,free_qty,line_total,products(name))')
+        .eq('customer_id', custId).eq('status','confirmed').order('created_at',{ascending:false}).limit(25),
+      sb.from('customer_payments').select('id,amount,created_at,ref').eq('customer_id', custId).eq('status','confirmed').order('created_at',{ascending:false}).limit(15),
+    ]);
+    if(inv.error) throw inv.error;
+    if(pay.error) throw pay.error;
+    // الأكتر شراءً: عدد مرات ظهور كل صنف فى آخر الفواتير دي
+    const tally={};
+    (inv.data||[]).forEach(s=>(s.sale_items||[]).forEach(it=>{
+      const k=it.product_id; tally[k]=tally[k]||{pid:k,name:it.products?.name||'',qty:0,n:0};
+      tally[k].qty+=Number(it.qty)||0; tally[k].n++;
+    }));
+    const top=Object.values(tally).sort((a,b)=>b.n-a.n||b.qty-a.qty).slice(0,5);
+    _csCache[custId]={invoices:inv.data||[], top};
+    const rows=[
+      ...(inv.data||[]).map(s=>({t:'inv',ts:new Date(s.created_at).getTime(),s})),
+      ...(pay.data||[]).map(p=>({t:'pay',ts:new Date(p.created_at).getTime(),p})),
+    ].sort((a,b)=>b.ts-a.ts);
+    const el=body(); if(!el) return;
+    const last=(inv.data||[])[0];
+    el.innerHTML=`
+      ${last?`<button class="btn btn-g btn-xl" style="width:100%;margin-bottom:10px" onclick="repeatLastInvoice('${custId}')">🔁 كرر آخر فاتورة (${fmt(last.total)} ج — ${new Date(last.created_at).toLocaleDateString('ar-EG')})</button>`:''}
+      ${top.length?`<div class="sec" style="margin-bottom:10px"><div class="st">⭐ الأكتر شراءً</div><div style="display:flex;flex-wrap:wrap;gap:6px">${top.map(t=>`<span class="vchip">${vlpEsc(t.name)}</span>`).join('')}</div></div>`:''}
+      <div class="sec"><div class="st">📒 الحركات (من سلطان)</div>
+        ${rows.map(r=>r.t==='inv'?csInvRow(r.s):csPayRow(r.p)).join('')||'<div style="color:var(--t3);text-align:center;padding:12px">لا توجد حركات</div>'}
+      </div>`;
+  }catch(e){
+    console.warn('csLoad',e);
+    if(body()) body().innerHTML=`<div class="al al-r" style="font-size:12.5px">تعذّر تحميل الكشف من سلطان — اتأكد من النت وحاول تاني.</div>`+csLocalHtml(custId);
+  }
+}
+function csInvRow(s){
+  const items=(s.sale_items||[]).map(it=>`${vlpEsc(it.products?.name||'')} ×${fmt(it.qty)}`).join(' | ');
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--bdr)">
+    <div style="display:flex;justify-content:space-between;gap:8px"><span style="font-size:13px;font-weight:700">🧾 ${vlpEsc(s.invoice_no||'')} <span class="bdg ${s.payment_type==='credit'?'br2':'bs'}">${s.payment_type==='credit'?'آجل':'نقدي'}</span></span><span class="cg" style="font-size:13px;font-weight:700">${fmt(s.total)} ج</span></div>
+    <div style="font-size:11.5px;color:var(--t3)">${new Date(s.created_at).toLocaleDateString('ar-EG')}</div>
+    ${items?`<div style="font-size:12px;color:var(--t2);margin-top:3px">${items}</div>`:''}
+    ${s.notes?`<div style="font-size:12px;color:var(--gold);margin-top:3px">📝 ${vlpEsc(s.notes)}</div>`:''}
+  </div>`;
+}
+function csPayRow(p){
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;gap:8px">
+    <span style="font-size:13px">💰 تحصيل <span style="font-size:11.5px;color:var(--t3)">${new Date(p.created_at).toLocaleDateString('ar-EG')}</span></span>
+    <span class="ct" style="font-size:13px;font-weight:700">${fmt(p.amount)} ج</span></div>`;
+}
+// لو مفيش نت: آخر أسبوع من سجل التليفون
+function csLocalHtml(custId){
+  const sales=Object.values(DAYS).flatMap(d=>d.sales||[]).filter(s=>s.custId===custId&&!s.void&&s.total>0).sort((a,b)=>b.ts-a.ts).slice(0,20);
+  const cols=Object.values(DAYS).flatMap(d=>d.collections||[]).filter(c=>c.custId===custId).sort((a,b)=>b.ts-a.ts).slice(0,10);
+  if(!sales.length && !cols.length) return '';
+  return `<div class="sec" style="margin-top:8px"><div class="st">📱 آخر أسبوع على التليفون</div>
+    ${sales.map(s=>`<div class="row"><span class="rl" style="font-size:13px">${s.emoji||'📦'} ${vlpEsc(s.name)} ×${s.qty} — ${new Date(s.ts).toLocaleDateString('ar-EG')}</span><span class="rv cg" style="font-size:13px">${fmt(s.total)} ج</span></div>`).join('')}
+    ${cols.map(c=>`<div class="row"><span class="rl" style="font-size:13px">💰 تحصيل — ${new Date(c.ts).toLocaleDateString('ar-EG')}</span><span class="rv ct" style="font-size:13px">${fmt(c.amt)} ج</span></div>`).join('')}
+  </div>`;
+}
+
+// ── كرر آخر فاتورة: بيحط أصناف آخر فاتورة للعميل فى السلة (على قد المتاح فى العربية) ──
+async function repeatLastInvoice(custId){
+  if(!CDAY){ toast('ابدأ يوماً أولاً','err'); return; }
+  let data=_csCache[custId];
+  if(!data){
+    if(!REP || !isRealSultanId(custId) || !navigator.onLine){ toast('محتاج نت والعميل متزامن من سلطان','err'); return; }
+    const { data:inv, error } = await sb.from('sales').select('id,total,created_at,sale_items(product_id,qty,products(name))')
+      .eq('customer_id', custId).eq('status','confirmed').order('created_at',{ascending:false}).limit(1);
+    if(error){ toast('تعذّر جلب آخر فاتورة','err'); return; }
+    data={invoices:inv||[]};
+  }
+  const last=(data.invoices||[])[0];
+  if(!last || !(last.sale_items||[]).length){ toast('مفيش فاتورة سابقة للعميل ده','err'); return; }
+  if(cart.length && !confirm('السلة فيها أصناف — تستبدلها بآخر فاتورة العميل؟')) return;
+  cart=[]; const skipped=[];
+  last.sale_items.forEach(it=>{
+    const p=vanFind(it.product_id);
+    const want=Number(it.qty)||0;
+    if(!p || p.qty<=0){ skipped.push(it.products?.name||'صنف'); return; }
+    const q=Math.min(want,p.qty);
+    cart.push({prodId:p.id,qty:q});
+    if(q<want) skipped.push((it.products?.name||'صنف')+' (المتاح '+fmt(p.qty)+' بس)');
+  });
+  saveCart();
+  PRESET_CUST=custId;
+  closeModal();
+  go('sell', document.querySelectorAll('.nb')[0]);
+  toast(skipped.length?`اتحطت الأصناف — ناقص: ${skipped.join('، ')}`:'✅ اتحطت أصناف آخر فاتورة', skipped.length?'err':undefined);
 }
 
 function editCustomer(custId){
@@ -3119,7 +3269,6 @@ function editCustomer(custId){
     <div class="ig"><div class="il">الاسم</div><input type="text" id="ec-name" class="ifield" value="${cust.name}"></div>
     <div class="ig"><div class="il">الهاتف</div><input type="tel" id="ec-phone" class="ifield" value="${cust.phone||''}"></div>
     <div class="ig"><div class="il">العنوان</div><input type="text" id="ec-addr" class="ifield" value="${store.address||''}"></div>
-    ${(store.oldDebt||0)>0?`<div style="font-size:12.5px;color:var(--t3);margin-bottom:10px">💰 رصيد افتتاحي: ${fmt(store.oldDebt)} ج — بيتزامن من رصيد العميل فى سلطان ERP، مش بيتعدّل من هنا</div>`:''}
     <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="saveCustomerEdit('${custId}')">✅ حفظ التعديلات</button>
     <div class="sec" style="margin-top:14px">
       <div class="st">🔒 إعدادات الآجل</div>
@@ -3162,7 +3311,7 @@ function saveCustomerEdit(custId){
     toast('✅ تم حفظ بيانات العميل');
   }
   closeModal();
-  r_customers();
+  r_stores();
 }
 
 
@@ -3244,7 +3393,7 @@ function confirmWarehouseReturn(){
 // ── مرتجع العميل (Multi-product) ─────────────────────────────────
 function showCustomerReturn(){
   if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
-  const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${(c.debt||0)>0?' — مديون '+fmt(c.debt)+' ج':''}</option>`).join('');
+  cpkInit('cr-cust', CUSTOMERS, [{value:'',label:'عميل عابر (بدون خصم دين)'}]);
   const prodsHtml=VAN_STOCK.map(p=>`
     <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr)">
       <span style="font-size:20px">${p.emoji||'📦'}</span>
@@ -3264,10 +3413,7 @@ function showCustomerReturn(){
     </div>
     <div class="ig">
       <div class="il">العميل</div>
-      <select id="cr-cust" class="ifield">
-        <option value="">عميل عابر (بدون خصم دين)</option>
-        ${custOpts}
-      </select>
+      ${cpkHtml('cr-cust','🔍 عميل عابر (بدون خصم دين) — اكتب للبحث')}
     </div>
     <div class="al al-b" style="margin-bottom:10px;font-size:13px">أدخل الكمية المرتجعة لكل صنف (0 = لا يرجع)</div>
     <div style="max-height:250px;overflow-y:auto;margin-bottom:12px">${prodsHtml}</div>
@@ -3346,7 +3492,19 @@ function confirmCustomerReturn(fullReturn){
 // ══════════════════════════════════════════════════════════════════
 // ── GOAL PAGE ─────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════
+// نسبة العمولة من سلطان (sales_reps.commission_pct) — للجلسات اللي دخلت قبل التحديث ومعاهاش النسبة
+let _commFetching=false;
+async function ensureCommission(){
+  if(!REP || REP.commissionPct!=null || _commFetching || !navigator.onLine) return;
+  _commFetching=true;
+  try{
+    const { data } = await sb.from('sales_reps').select('commission_pct').eq('id', REP.id).maybeSingle();
+    if(data){ REP.commissionPct = Number(data.commission_pct)||0; LS.s('rep', REP); if(document.getElementById('pg-goal')?.classList.contains('on')) r_goal(); }
+  }catch(e){ console.warn('ensureCommission', e); }
+  _commFetching=false;
+}
 function r_goal(){
+  ensureCommission();
   const achieved=calcAchieved();
   const target=GOAL.target||0;
   const pct=target>0?Math.min(100,Math.round((achieved/target)*100)):0;
@@ -3366,8 +3524,6 @@ function r_goal(){
   if(CDAY&&lastSaleTs&&(now-lastSaleTs)>3*3600000) alerts.push({t:'warn',m:'⚠️ لا توجد مبيعات منذ أكثر من 3 ساعات'});
   if(target>0&&pct<30&&stats.visits>5) alerts.push({t:'warn',m:'⚠️ المبيعات أقل من 30% رغم '+stats.visits+' زيارات'});
   if(vTarget>0&&stats.visits>0&&convRate<30) alerts.push({t:'warn',m:'⚠️ نسبة التحويل منخفضة ('+convRate+'%)'});
-  const pendingTG=TG.queue.filter(m=>m.status==='pending').length;
-  if(pendingTG>0) alerts.push({t:'info',m:'📡 '+pendingTG+' رسائل في انتظار الإرسال للتليجرام'});
 
   const alertsHtml=alerts.map(a=>`<div class="al ${a.t==='warn'?'al-o':'al-b'}" style="margin-bottom:8px">${a.m}</div>`).join('');
 
@@ -3412,7 +3568,7 @@ function r_goal(){
     <div class="kcard"><div class="kc-val ct">${fmt(stats.totalCollect)}</div><div class="kc-lbl">تحصيل ج</div></div>
     <div class="kcard"><div class="kc-val cr">${fmt(stats.totalReturns)}</div><div class="kc-lbl">مرتجع ج</div></div>
     <div class="kcard"><div class="kc-val cx">${fmt(stats.totalExpenses)}</div><div class="kc-lbl">مصروفات ج</div></div>
-    <div class="kcard"><div class="kc-val" style="font-size:16px">📡 <span id="tg-pending-count">${TG.queue.filter(m=>m.status==='pending').length}</span></div><div class="kc-lbl">TG معلق</div></div>
+    <div class="kcard"><div class="kc-val cg" id="goal-comm">${REP?.commissionPct!=null?fmt(Math.max(0,stats.totalSales-stats.totalReturns)*REP.commissionPct/100):'…'}</div><div class="kc-lbl">💵 عمولتك النهارده ج${REP?.commissionPct?` (${REP.commissionPct}%)`:''}</div></div>
   </div>
   <div class="sec"><div class="st">📦 أكثر مبيعاً</div>${topProds}</div>
   <div class="sec"><div class="st">🏭 المخزون المتبقي</div>
@@ -3435,7 +3591,8 @@ function storeCardHtml(s, i, opts){
   const cust=CUSTOMERS.find(c=>c.id===s.id);
   const debt=(cust?.debt||0)+(s.oldDebt||0);
   const inRoute = getTodayRouteIds().includes(s.id);
-  return `<div class="scard" ${inRoute?'style="border-color:var(--blue)"':''}>
+  const bcol = opts.next ? 'var(--gold)' : tv ? 'var(--g)' : inRoute ? 'var(--blue)' : '';
+  return `<div class="scard" ${bcol?'style="border-color:'+bcol+(opts.next?';border-width:2px':'')+'"':''}>
     <div class="scard-top">
       <div style="flex:1">
         <div class="scard-name">${inRoute?'🗺️ ':''}${s.name}</div>
@@ -3448,7 +3605,7 @@ function storeCardHtml(s, i, opts){
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
       ${['sold','collect','reject','closed','pending'].map(x=>`<button class="btn ${activeStatuses.includes(x)?'btn-g':'btn-b'}" style="flex:1;font-size:11px;padding:7px 2px;min-width:46px" onclick="visitStore(${i},'${x}')">${statusLbl(x)}</button>`).join('')}
     </div>
-    ${s.lat?`<button class="btn btn-blue" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openMaps(${s.lat},${s.lng})">🗺️ خريطة</button>`:''}
+    ${custActionsHtml(s.id)}
     <input type="text" value="${s.note||''}" onchange="STORES[${i}].note=this.value;LS.s('stores',STORES)" placeholder="ملاحظة..." style="background:var(--bg4);border:1px solid var(--bdr);border-radius:9px;padding:7px 11px;font-family:Cairo,sans-serif;font-size:13px;color:var(--t2);outline:none;width:100%;margin-bottom:7px">
     <div style="display:flex;gap:6px">
       <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="showCustStatement('${s.id}')">كشف حساب</button>
@@ -3457,13 +3614,51 @@ function storeCardHtml(s, i, opts){
   </div>`;
 }
 
+// ══════════════════════════════════════════════════════════════════
+// ── صفحة "عملاء": المحلات والعملاء فى شاشة واحدة، بفلاتر ────────────
+// فلتر: الكل / النهاردة فى الخط / عليهم ديون / لسه ما اتزارش / اتحصّل منهم النهاردة
+// ══════════════════════════════════════════════════════════════════
+const CUST_FILTERS = [
+  ['all','👥 الكل'], ['route','🗺️ النهاردة في الخط'], ['debt','🔴 عليهم ديون'],
+  ['unvisited','⏳ لسه ما اتزارش'], ['collected','✅ اتحصّل النهاردة'],
+];
+let STORE_FILTER = 'all';
+
+// أي عميل مالوش كارت محل (نادر) بنعمله واحد علشان يظهر هنا بنفس الأزرار
+function ensureStoresForCustomers(){
+  let added=false;
+  CUSTOMERS.forEach(c=>{
+    if(!STORES.some(s=>s.id===c.id)){ STORES.push({id:c.id,name:c.name,phone:c.phone||'',address:'',note:'',visits:[],oldDebt:0}); added=true; }
+  });
+  if(added) LS.s('stores',STORES);
+}
+function storeFilterPass(s){
+  const cu=CUSTOMERS.find(c=>c.id===s.id);
+  const bal=(cu?.debt||0)+(s.oldDebt||0);
+  const visitedToday=!!s.visits?.some(v=>v.date===TODAY);
+  switch(STORE_FILTER){
+    case 'route': return getTodayRouteIds().includes(s.id);
+    case 'debt': return bal>0;
+    case 'unvisited': return !visitedToday;
+    case 'collected': return (CDAY?.collections||[]).some(c=>c.custId===s.id);
+    default: return true;
+  }
+}
+function storeFilterCounts(){
+  const keep=STORE_FILTER, out={};
+  CUST_FILTERS.forEach(([k])=>{ STORE_FILTER=k; out[k]=STORES.filter(storeFilterPass).length; });
+  STORE_FILTER=keep; return out;
+}
+
 function r_stores(){
+  ensureStoresForCustomers();
   const today=TODAY;
   const todayVisits=CDAY?.visits||[];
   const visited=todayVisits.length;
   const sold=todayVisits.filter(v=>v.status==='sold').length;
   const rejected=todayVisits.filter(v=>v.status==='reject').length;
   const conv=visited>0?Math.round((sold/visited)*100):0;
+  const totalDebt=STORES.reduce((a,s)=>a+(CUSTOMERS.find(c=>c.id===s.id)?.debt||0)+(s.oldDebt||0),0);
 
   // Reminder — same weekday last week
   const lw=new Date(today); lw.setDate(lw.getDate()-7);
@@ -3473,7 +3668,7 @@ function r_stores(){
 
   const routeBar=visited?`
   <div class="sec" style="margin-bottom:12px">
-    <div class="st">📍 خط السير اليوم</div>
+    <div class="st">📍 زيارات اليوم</div>
     <div class="g4" style="margin-bottom:10px">
       <div class="kcard"><div class="kc-val cb">${visited}</div><div class="kc-lbl">زرت</div></div>
       <div class="kcard"><div class="kc-val cg">${sold}</div><div class="kc-lbl">باعوا</div></div>
@@ -3483,14 +3678,24 @@ function r_stores(){
     <div class="pb"><div class="pf ${conv>=70?'pg-g':conv>=40?'pg-o':'pg-r'}" style="width:${conv}%"></div></div>
   </div>`:'';
 
-  const stHtml=STORES.map((s,i)=>storeCardHtml(s,i)).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا توجد محلات</div>';
+  const cnt=storeFilterCounts();
+  const chips=CUST_FILTERS.map(([k,l])=>`<button class="btn ${STORE_FILTER===k?'btn-blue':'btn-b'}" style="font-size:12px;padding:8px 10px;white-space:nowrap;flex-shrink:0" onclick="setStoreFilter('${k}')">${l} (${cnt[k]})</button>`).join('');
 
   document.getElementById('pg-stores').innerHTML=`
   ${remHtml}${routeBar}
-  <button class="btn btn-blue btn-lg" style="width:100%;margin-bottom:12px" onclick="ROUTE_DAY_VIEW=new Date().getDay();go('route')">🗺️ خط السير (${getTodayRouteIds().length} محل النهاردة)</button>
-  <button class="btn btn-teal btn-lg" style="width:100%;margin-bottom:12px" onclick="manualSyncCustomers()">🔄 مزامنة العملاء من سلطان</button>
-  <div class="sec">
-    <div class="st">➕ إضافة محل / عميل</div>
+  <div class="g2" style="margin-bottom:12px">
+    <div class="kcard"><div class="kc-val cb">${STORES.length}</div><div class="kc-lbl">إجمالي العملاء</div></div>
+    <div class="kcard"><div class="kc-val cr">${fmt(totalDebt)}</div><div class="kc-lbl">إجمالي المديونية ج</div></div>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px">
+    <button class="btn btn-blue btn-lg" style="flex:1" onclick="ROUTE_DAY_VIEW=new Date().getDay();go('route')">🗺️ خط السير (${getTodayRouteIds().length})</button>
+    <button class="btn btn-teal btn-lg" style="flex:1" onclick="manualSyncCustomers()">🔄 مزامنة العملاء</button>
+  </div>
+  <input class="sbox" placeholder="🔍 ابحث بالاسم أو التليفون أو العنوان..." oninput="filterStores(this.value)" id="store-search" value="${STORE_SEARCH_Q||''}">
+  <div style="display:flex;gap:6px;overflow-x:auto;margin:10px 0;padding-bottom:4px">${chips}</div>
+  <div id="store-list"></div>
+  <details class="sec" style="margin-top:12px">
+    <summary class="st" style="cursor:pointer">➕ إضافة محل / عميل جديد</summary>
     <div class="ig"><div class="il">اسم المحل *</div><input type="text" id="new-store" class="ifield" placeholder="اسم المحل أو العميل"></div>
     <div class="ig"><div class="il">رقم التليفون</div><input type="tel" id="new-phone" class="ifield" placeholder="01xxxxxxxxx (اختياري)"></div>
     <div class="ig" style="margin-bottom:10px"><div class="il">العنوان</div><input type="text" id="new-addr" class="ifield" placeholder="العنوان (اختياري)"></div>
@@ -3498,20 +3703,27 @@ function r_stores(){
       <button class="btn btn-g btn-lg" onclick="addStore(false)">إضافة</button>
       <button class="btn btn-blue btn-lg" onclick="addStore(true)">📍 مع GPS</button>
     </div>
-  </div>
-  <input class="sbox" placeholder="🔍 ابحث عن محل..." oninput="filterStores(this.value)" id="store-search" value="${STORE_SEARCH_Q||''}">
-  <div class="sec"><div class="st">🏪 كل المحلات (<span id="store-count">${STORES.length}</span>)</div><div id="store-list">${stHtml}</div></div>`;
-  if(STORE_SEARCH_Q) filterStores(STORE_SEARCH_Q);
+  </details>`;
+  renderStoreList();
 }
 
-function filterStores(q){
-  STORE_SEARCH_Q=q;
+function setStoreFilter(k){ STORE_FILTER=k; r_stores(); }
+
+function renderStoreList(){
   const list=document.getElementById('store-list'); if(!list) return;
-  const idxMap = STORES.map((s,i)=>({s,i}));
-  const filtered = q ? idxMap.filter(({s})=>s.name.includes(q)||s.phone?.includes(q)||s.address?.includes(q)) : idxMap;
-  const cnt=document.getElementById('store-count'); if(cnt) cnt.textContent=filtered.length;
-  list.innerHTML = filtered.map(({s,i})=>storeCardHtml(s,i)).join('')||'<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
+  const q=(STORE_SEARCH_Q||'').trim().toLowerCase();
+  const rows=STORES.map((s,i)=>({s,i})).filter(({s})=>storeFilterPass(s) &&
+    (!q || (s.name||'').toLowerCase().includes(q) || String(s.phone||'').includes(q) || (s.address||'').toLowerCase().includes(q)));
+  // اللي عليهم ديون الأول (الأكبر)، وبعدين الباقي بالاسم
+  rows.sort((a,b)=>{
+    const da=(CUSTOMERS.find(c=>c.id===a.s.id)?.debt||0)+(a.s.oldDebt||0);
+    const db=(CUSTOMERS.find(c=>c.id===b.s.id)?.debt||0)+(b.s.oldDebt||0);
+    return db-da || (a.s.name||'').localeCompare(b.s.name||'','ar');
+  });
+  list.innerHTML = rows.map(({s,i})=>storeCardHtml(s,i)).join('') ||
+    '<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">لا نتائج</div>';
 }
+function filterStores(q){ STORE_SEARCH_Q=q; renderStoreList(); }
 
 const statusLbl=st=>({sold:'باع',collect:'حصّل',reject:'رفض',closed:'مغلق',pending:'معلق'}[st]||'معلق');
 
@@ -3589,12 +3801,20 @@ function r_route(){
     return `<button class="btn ${i===wd?'btn-blue':'btn-b'}" style="flex:1;font-size:11px;padding:8px 2px" onclick="switchRouteDay(${i})">${WEEKDAY_SHORT[i]}${cnt?` (${cnt})`:''}</button>`;
   }).join('');
 
-  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {routeView: true})).join('')
+  // العميل الجاي = أول واحد فى خط النهاردة لسه ما اتزارش؛ الأخضر اللي اتزار
+  const visitedToday = s => !!s.visits?.some(v=>v.date===TODAY);
+  const nextStore = isToday ? routeStores.find(s=>!visitedToday(s)) : null;
+  const doneN = isToday ? routeStores.filter(visitedToday).length : 0;
+  const nextHtml = isToday && routeStores.length ? (nextStore
+    ? `<div class="al al-gold" style="margin-bottom:10px;font-size:13.5px">➡️ العميل الجاي: <b>${vlpEsc(nextStore.name)}</b>${nextStore.address?' — '+vlpEsc(nextStore.address):''} <span style="color:var(--t3)">(${doneN} من ${routeStores.length} اتزاروا)</span></div>`
+    : `<div class="al al-teal" style="margin-bottom:10px;font-size:13.5px">✅ خلّصت خط النهاردة (${routeStores.length} من ${routeStores.length})</div>`) : '';
+  const cardsHtml = routeStores.map(s=>storeCardHtml(s, STORES.indexOf(s), {routeView: true, next: nextStore===s})).join('')
     || `<div style="text-align:center;color:var(--t3);padding:20px;font-size:13px">مفيش محلات في خط سير ${WEEKDAY_NAMES[wd]} لسه — ضيف من تحت</div>`;
 
   const addOptionsHtml = otherStores.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
 
   document.getElementById('pg-route').innerHTML=`
+  <button class="btn btn-b" style="margin-bottom:10px;font-size:13px" onclick="go('stores')">⬅️ رجوع للعملاء</button>
   <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${dayTabs}</div>
   <div class="al al-teal" style="margin-bottom:12px;font-size:12px">🔒 خط السير بيتحدد من سلطان ERP — تقدر تضيف محل جديد بس، مايتشالش من هنا</div>
   <div class="sec" style="margin-bottom:12px">
@@ -3604,6 +3824,7 @@ function r_route(){
       <button class="btn btn-g" style="padding:0 16px" onclick="addToRouteDay(${wd})">إضافة</button>
     </div>
   </div>
+  ${nextHtml}
   <div id="route-list">${cardsHtml}</div>`;
 }
 
@@ -3627,111 +3848,6 @@ function addToRouteDay(wd){
   if(REP) queueSync('route_add_customer', {dayKey:WEEKDAY_KEYS[wd], wdName:WEEKDAY_NAMES[wd], customerId:id});
   r_route();
 }
-// ══════════════════════════════════════════════════════════════════
-// ── OFFERS PAGE ───────────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════
-function r_offers(){
-  const prods=VAN_STOCK.length?VAN_STOCK:WAREHOUSE;
-  const poHtml=OFFERS.map((o,i)=>{
-    const p=prods.find(x=>x.id===o.prodId);
-    const desc=o.type==='price'?`اشتري ${o.triggerQty}+ ← سعر ${fmt(o.discPrice)} ج`:`اشتري ${o.triggerQty} ← هدية ${o.giftQty}`;
-    return `<div class="ocard">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div><div style="font-size:14px;font-weight:900;color:var(--orange)">🎁 ${o.name}</div>
-        <div style="font-size:12px;color:var(--t2);margin-top:3px">${p?.name||'صنف'} — ${desc}</div></div>
-        <button class="btn btn-r" style="font-size:11px;padding:6px 10px" onclick="requireAdmin('حذف عرض',()=>delOffer(${i}))">حذف</button>
-      </div>
-      <div class="toggle-wrap">
-        <div class="toggle ${o.active?'on':''}" onclick="requireAdmin('تغيير حالة العرض',()=>togOffer(${i}))"></div>
-        <span style="font-size:13px;color:${o.active?'var(--orange)':'var(--t3)'}">${o.active?'مفعّل':'معطّل'}</span>
-      </div>
-    </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:14px;font-size:13px">لا عروض</div>';
-
-  const ioHtml=INV_OFFERS.map((o,i)=>`
-    <div style="background:linear-gradient(135deg,rgba(255,208,0,.07),rgba(0,255,136,.04));border:1px solid rgba(255,208,0,.25);border-radius:12px;padding:13px;margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div><div style="font-size:14px;font-weight:900;color:var(--gold)">🧾 ${o.name}</div>
-        <div style="font-size:12px;color:var(--t2);margin-top:3px">عند ≥ ${fmt(o.minTotal)} ج — ${o.type==='pct'?`خصم ${o.value}%`:o.type==='fixed'?`خصم نقدي ثابت ${fmt(o.value)} ج`:`هدية: ${o.giftDesc}`}</div></div>
-        <button class="btn btn-r" style="font-size:11px;padding:6px 10px" onclick="requireAdmin('حذف عرض فاتورة',()=>delInvOffer(${i}))">حذف</button>
-      </div>
-      <div class="toggle-wrap">
-        <div class="toggle ${o.active?'on':''}" onclick="requireAdmin('تغيير حالة عرض الفاتورة',()=>togInvOffer(${i}))"></div>
-        <span style="font-size:13px;color:${o.active?'var(--gold)':'var(--t3)'}">${o.active?'مفعّل':'معطّل'}</span>
-      </div>
-    </div>`).join('')||'<div style="color:var(--t3);text-align:center;padding:14px;font-size:13px">لا عروض</div>';
-
-  document.getElementById('pg-offers').innerHTML=`
-  <div class="al al-adm">🔐 كل التعديلات على العروض تحتاج رمز المدير</div>
-  <div class="sec"><div class="st">🎁 عروض الصنف</div>${poHtml}
-    <button class="btn btn-o btn-lg" style="margin-top:8px" onclick="requireAdmin('إضافة عرض صنف',showAddOffer)">+ إضافة عرض صنف 🔐</button>
-  </div>
-  <div class="sec"><div class="st">🧾 عروض الفاتورة</div>${ioHtml}
-    <button class="btn btn-gold btn-lg" style="margin-top:8px" onclick="requireAdmin('إضافة عرض فاتورة',showAddInvOffer)">+ إضافة عرض فاتورة 🔐</button>
-  </div>`;
-}
-function togOffer(i){ OFFERS[i].active=!OFFERS[i].active; LS.s('offers',OFFERS); r_offers(); }
-function delOffer(i){ OFFERS.splice(i,1); LS.s('offers',OFFERS); r_offers(); }
-function togInvOffer(i){ INV_OFFERS[i].active=!INV_OFFERS[i].active; LS.s('invOffers',INV_OFFERS); r_offers(); }
-function delInvOffer(i){ INV_OFFERS.splice(i,1); LS.s('invOffers',INV_OFFERS); r_offers(); }
-function showAddOffer(){
-  const prods=(VAN_STOCK.length?VAN_STOCK:WAREHOUSE);
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">🎁 عرض صنف</div><span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="ig"><div class="il">اسم العرض</div><input type="text" id="o-name" class="ifield" placeholder="مثال: عرض الكمية"></div>
-    <div class="ig"><div class="il">الصنف</div><select id="o-prod" class="ifield">${prods.map(p=>`<option value="${p.id}">${p.emoji||'📦'} ${p.name}</option>`).join('')||'<option>لا أصناف</option>'}</select></div>
-    <div class="ig"><div class="il">النوع</div><select id="o-type" class="ifield" onchange="togOT()"><option value="price">💲 سعر خاص</option><option value="gift">🎁 هدية</option></select></div>
-    <div class="ig"><div class="il">الكمية لتفعيل العرض</div><input type="number" id="o-tq" class="ifield" placeholder="10"></div>
-    <div id="o-pr" class="ig"><div class="il">السعر الخاص (ج)</div><input type="number" id="o-dp" class="ifield" placeholder="7"></div>
-    <div id="o-gr" class="ig" style="display:none"><div class="il">كمية الهدية</div><input type="number" id="o-gq" class="ifield" placeholder="1"></div>
-    <button class="btn btn-gold btn-lg" onclick="addOffer()">إضافة</button>`);
-}
-function togOT(){ const t=document.getElementById('o-type')?.value; document.getElementById('o-pr').style.display=t==='price'?'':'none'; document.getElementById('o-gr').style.display=t==='gift'?'':'none'; }
-function addOffer(){
-  const name=document.getElementById('o-name')?.value.trim();
-  const prodId=document.getElementById('o-prod')?.value;
-  const type=document.getElementById('o-type')?.value;
-  const tq=parseInt(document.getElementById('o-tq')?.value)||0;
-  const dp=parseFloat(document.getElementById('o-dp')?.value)||0;
-  const gq=parseInt(document.getElementById('o-gq')?.value)||0;
-  if(!name||!prodId||tq<=0){toast('أكمل البيانات','err');return;}
-  OFFERS.push({id:uid(),name,prodId,type,triggerQty:tq,discPrice:dp,giftQty:gq,active:true});
-  LS.s('offers',OFFERS); toast('✅ تم إضافة العرض'); closeModal(); r_offers();
-}
-function showAddInvOffer(){
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">🧾 عرض فاتورة</div><span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="ig"><div class="il">اسم العرض</div><input type="text" id="io-name" class="ifield" placeholder="خصم الكمية الكبيرة"></div>
-    <div class="ig"><div class="il">الحد الأدنى (ج)</div><input type="number" id="io-min" class="ifield" placeholder="2000"></div>
-    <div class="ig"><div class="il">النوع</div><select id="io-type" class="ifield" onchange="togIOT()"><option value="pct">💲 خصم %</option><option value="fixed">💰 خصم نقدي ثابت</option><option value="gift">🎁 هدية</option></select></div>
-    <div id="io-pr" class="ig"><div class="il">نسبة الخصم %</div><input type="number" id="io-pct" class="ifield" placeholder="5"></div>
-    <div id="io-fx" class="ig" style="display:none"><div class="il">قيمة الخصم الثابت (ج)</div><input type="number" id="io-fixedamt" class="ifield" placeholder="مثال: 50"></div>
-    <div id="io-gr" class="ig" style="display:none"><div class="il">وصف الهدية</div><input type="text" id="io-gd" class="ifield" placeholder="كارتون مياه"></div>
-    <button class="btn btn-gold btn-lg" onclick="addInvOffer()">إضافة</button>`);
-}
-function togIOT(){
-  const t=document.getElementById('io-type')?.value;
-  document.getElementById('io-pr').style.display=t==='pct'?'':'none';
-  document.getElementById('io-fx').style.display=t==='fixed'?'':'none';
-  document.getElementById('io-gr').style.display=t==='gift'?'':'none';
-}
-function addInvOffer(){
-  const name=document.getElementById('io-name')?.value.trim();
-  const min=parseFloat(document.getElementById('io-min')?.value)||0;
-  const type=document.getElementById('io-type')?.value;
-  const pct=parseFloat(document.getElementById('io-pct')?.value)||0;
-  const fixedAmt=parseFloat(document.getElementById('io-fixedamt')?.value)||0;
-  const gd=document.getElementById('io-gd')?.value.trim();
-  if(!name||min<=0){toast('أكمل البيانات','err');return;}
-  const value = type==='fixed' ? fixedAmt : pct;
-  INV_OFFERS.push({id:uid(),name,minTotal:min,type,value,giftDesc:gd||'',active:true});
-  LS.s('invOffers',INV_OFFERS); toast('✅ تم إضافة عرض الفاتورة'); closeModal(); r_offers();
-}
-
 // ══════════════════════════════════════════════════════════════════
 // ── صفحة "حمّل" — المندوب يحمّل عربيته بنفسه (مكان صفحة الطلبات القديمة) ──
 // المندوب داخل بحسابه الحقيقي (إيميل/باسورد)، والـPIN هنا تأكيد إضافي بس قبل
@@ -3991,9 +4107,15 @@ async function vlpConfirmLoad(){
   VLP.busy = true;
   if(btn){ btn.disabled=true; btn.textContent='⏳ جاري التحقق...'; }
   try{
-    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
-    if(!repRow?.van_load_pin){ fail('التحميل الذاتي لسه مش مفعّل ليك — كلّم الأدمن يحدّدلك PIN'); return; }
-    if(repRow.van_load_pin !== pin){ fail('PIN غلط — حاول تاني'); return; }
+    // التحقق من الـPIN على السيرفر (الـPIN الحقيقي ما بيوصلش التليفون) — ٥ محاولات غلط = قفل ١٥ دقيقة
+    const { data: chk, error: chkErr } = await sb.rpc('fn_verify_van_load_pin', { p_pin: pin });
+    if(chkErr){ fail('تعذّر التحقق من الـPIN — اتأكد من النت وحاول تاني'); return; }
+    if(!chk?.ok){
+      if(chk?.reason==='not_enabled') fail('التحميل الذاتي لسه مش مفعّل ليك — كلّم الأدمن يحدّدلك PIN');
+      else if(chk?.reason==='locked') fail(`محاولات غلط كتير — استنى ${chk.wait_min||15} دقيقة وحاول تاني`);
+      else fail(`PIN غلط — فاضل ${chk?.left ?? ''} محاولات`);
+      return;
+    }
     // إعادة التحقق من الرصيد لحظيًا قبل التنفيذ — منعًا لأي تغيّر من وقت ما اخترت
     const pids = Object.keys(VLP.cart);
     const { data: fresh } = await sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', VLP.whId).in('product_id', pids);
@@ -4033,12 +4155,39 @@ async function vlpConfirmLoad(){
 function r_more(){
   const days=Object.keys(DAYS).sort().reverse();
   document.getElementById('pg-more').innerHTML=`
+  <button class="btn btn-gold btn-lg" style="width:100%;margin-bottom:12px" onclick="go('goal')">🎯 الهدف والإنجاز</button>
   <div class="sec">
     <div class="st">📦 مخزون السيارة</div>
     <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — تقدر تحمّل عربيتك بنفسك من تبويب "🚛 حمّل"، أو الأدمن يحمّلهالك من سلطان ERP</div>
     ${VAN_STOCK.length?`<div class="al al-teal">✅ مخزون السيارة: ${VAN_STOCK.length} صنف — ${VAN_STOCK.filter(p=>p.qty>0).length} متاح</div>`:'<div class="al al-o">⚠️ مخزون السيارة فارغ — لسه محدش حمّل عربيتك من سلطان</div>'}
-    <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   </div>
+  <div class="sec">
+    <div class="st">👤 الحساب</div>
+    <div class="al al-teal" style="margin-bottom:10px">حساب سلطان: ${REP?.name||'—'}</div>
+    <button class="btn btn-r btn-lg" onclick="repLogout()">🚪 تسجيل خروج من حساب سلطان</button>
+  </div>
+  <div class="sec">
+    <div class="st">📅 سجل الأيام (${days.length})</div>
+    ${days.slice(0,7).map(d=>{
+      const rec=DAYS[d];
+      const s=rec?Object.assign({},rec.sales?.filter?.(s=>!s.void).reduce((a,s)=>({...a,t:(a.t||0)+(s.total>0?s.total:0)}),{t:0})):null;
+      return `<div class="row" style="cursor:pointer" onclick="showDayReport('${d}')">
+        <span class="rl">${d} — ${rec?.status==='closed'?'🔴 مغلق':'🟢 مفتوح'}</span>
+        <span class="rv cg">${s?fmt(s.t)+' ج':'—'}</span>
+      </div>`;
+    }).join('')||'<div style="color:var(--t3);text-align:center;font-size:13px">لا سجلات</div>'}
+  </div>
+  <div class="sec">
+    <button class="btn btn-adm btn-lg" onclick="requireAdmin('أدوات المدير',showMoreAdmin)">🔐 أدوات المدير (إعدادات، مزامنة، نسخ احتياطي...)</button>
+    <div id="more-admin"></div>
+  </div>`;
+}
+
+// أدوات المدير: مخبّية ورا الـPIN علشان المندوب ما يضغط على حاجة خطر بالغلط
+function showMoreAdmin(){
+  const el=document.getElementById('more-admin'); if(!el) return;
+  el.innerHTML=`
+  <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   <div class="sec">
     <div class="st">📡 مزامنة سلطان ERP</div>
     <div style="font-size:12px;color:var(--t3);margin-bottom:8px">${SYNC_QUEUE.length?`${SYNC_QUEUE.length} عملية فى الطابور${SYNC_QUEUE.some(e=>e.attempts>0)?' — فيه عمليات فشلت ⚠️':''}`:'كل حاجة اتزامنت مع سلطان ✅'}</div>
@@ -4046,12 +4195,10 @@ function r_more(){
   </div>
   <div class="sec">
     <div class="st">⚙️ الإعدادات</div>
-    <div class="al al-teal" style="margin-bottom:10px">👤 حساب سلطان: ${REP?.name||'—'}</div>
     <div class="ig"><div class="il">الخط</div><input type="text" id="cfg-route" class="ifield" value="${CFG?.route||''}"></div>
     <div class="ig"><div class="il">PIN جديد (4 أرقام)</div><input type="number" id="cfg-pin" class="ifield" placeholder="اتركه فارغاً إذا لا تريد التغيير"></div>
     <button class="btn btn-b btn-lg" style="margin-bottom:10px" onclick="saveCfg()">حفظ الإعدادات</button>
     <button class="btn btn-adm btn-lg" style="margin-bottom:10px" onclick="requireAdmin('إعدادات المدير',showAdminCfg)">⚙️ إعدادات المدير 🔐</button>
-    <button class="btn btn-r btn-lg" onclick="repLogout()">🚪 تسجيل خروج من حساب سلطان</button>
   </div>
   <div class="sec">
     <div class="st">📱 تليجرام — رقابة فورية</div>
@@ -4082,17 +4229,6 @@ function r_more(){
     </div>
     <button class="btn btn-b btn-lg" onclick="exportCSV()">📊 تصدير CSV اليوم</button>
     <button class="btn btn-r btn-lg" style="margin-top:8px" onclick="showSmartReset()">🔄 التنظيف الذكي 🔐</button>
-  </div>
-  <div class="sec">
-    <div class="st">📅 سجل الأيام (${days.length})</div>
-    ${days.slice(0,7).map(d=>{
-      const rec=DAYS[d];
-      const s=rec?Object.assign({},rec.sales?.filter?.(s=>!s.void).reduce((a,s)=>({...a,t:(a.t||0)+(s.total>0?s.total:0)}),{t:0})):null;
-      return `<div class="row" style="cursor:pointer" onclick="showDayReport('${d}')">
-        <span class="rl">${d} — ${rec?.status==='closed'?'🔴 مغلق':'🟢 مفتوح'}</span>
-        <span class="rv cg">${s?fmt(s.t)+' ج':'—'}</span>
-      </div>`;
-    }).join('')||'<div style="color:var(--t3);text-align:center;font-size:13px">لا سجلات</div>'}
   </div>
   <div class="sec">
     <div class="st">📝 سجل التدقيق (Audit Trail) <span class="st-a" onclick="showFullAudit()">عرض الكل</span></div>
@@ -4232,7 +4368,6 @@ function showDayReport(date){
     </div>
     <div class="row"><span class="rl">الزيارات</span><span class="rv cb">${visits}</span></div>
     <div class="row"><span class="rl">باعوا</span><span class="rv cg">${sold}</span></div>
-    <div class="row"><span class="rl">التوريد</span><span class="rv cp">${fmt(totalDep)} ج</span></div>
     ${rec.closeReport?`<div class="row"><span class="rl">الفعلي</span><span class="rv">${fmt(rec.closeReport.actual)} ج</span></div>
     <div class="row"><span class="rl">الفرق</span><span class="rv ${rec.closeReport.diff>=0?'cg':'cr'}">${rec.closeReport.diff>=0?'+':''}${fmt(rec.closeReport.diff)} ج</span></div>`:''}
     <button class="btn btn-b btn-lg" style="margin-top:10px" onclick="closeModal()">إغلاق</button>`);
@@ -4388,8 +4523,8 @@ function onBakFile(input){
           if(d.DAYS)      { DAYS=d.DAYS;           LS.s('days',DAYS); loadDay(); }
           if(d.CUSTOMERS) { CUSTOMERS=d.CUSTOMERS; LS.s('customers',CUSTOMERS); }
           if(d.STORES)    { STORES=d.STORES;       LS.s('stores',STORES); }
-          if(d.OFFERS)    { OFFERS=d.OFFERS;       LS.s('offers',OFFERS); }
-          if(d.INV_OFFERS){ INV_OFFERS=d.INV_OFFERS; LS.s('invOffers',INV_OFFERS); }
+          
+          
           if(d.WAREHOUSE) { WAREHOUSE=d.WAREHOUSE; LS.s('warehouse',WAREHOUSE); }
           if(d.VAN_STOCK) { VAN_STOCK=d.VAN_STOCK; LS.s('van_stock',VAN_STOCK); }
           if(d.AUDIT)     { AUDIT=d.AUDIT;         LS.s('audit',AUDIT); }
