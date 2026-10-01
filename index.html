@@ -109,6 +109,11 @@ body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-h
 /* INPUTS */
 .ig{margin-bottom:10px}
 .il{font-size:13px;color:var(--t2);margin-bottom:4px;font-weight:600}
+.cpk-list{position:absolute;z-index:50;top:100%;right:0;left:0;max-height:240px;overflow-y:auto;background:var(--bg2,#fff);border:1px solid var(--bdr);border-radius:11px;margin-top:3px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.cpk-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid var(--bdr);font-size:14px;cursor:pointer}
+.cpk-item:last-child{border-bottom:0}
+.cpk-bal{font-size:12px;color:var(--t3);white-space:nowrap}
+.cpk-bal.d{color:var(--orange);font-weight:700}
 .ifield{width:100%;background:var(--bg3);border:1px solid var(--bdr);border-radius:11px;padding:10px 13px;font-family:'Cairo',sans-serif;font-size:14px;color:var(--text);outline:none}
 .ifield:focus{border-color:var(--g)}
 .ifield::placeholder{color:var(--t3)}
@@ -366,23 +371,21 @@ function pinTap(e,v){}
   <div id="pg-goal"      class="page"></div>
   <div id="pg-stores"    class="page"></div>
   <div id="pg-customers" class="page"></div>
-  <div id="pg-offers"    class="page"></div>
   <div id="pg-vload"     class="page"></div>
   <div id="pg-more"      class="page"></div>
   <div id="pg-van"       class="page"></div>
   <div id="pg-route"     class="page"></div>
 
-  <nav class="nav" style="grid-template-columns:repeat(10,1fr)">
+  <nav class="nav" style="grid-template-columns:repeat(9,1fr)">
     <button class="nb on"  onclick="go('sell',this)">     <span class="ni">🧾</span><span class="nl">بيع</span></button>
     <button class="nb"     onclick="go('ledger',this)">   <span class="ni">💰</span><span class="nl">كشف</span></button>
     <button class="nb"     onclick="go('goal',this)">     <span class="ni">🎯</span><span class="nl">الهدف</span></button>
     <button class="nb"     onclick="go('stores',this)">   <span class="ni">🏪</span><span class="nl">محلات</span></button>
     <button class="nb"     onclick="go('route',this)">    <span class="ni">🗺️</span><span class="nl">الخط</span></button>
     <button class="nb"     onclick="go('customers',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
-    <button class="nb"     onclick="go('offers',this)">   <span class="ni">🎁</span><span class="nl">عروض</span></button>
     <button class="nb" id="nb-vload" onclick="go('vload',this)"><span class="ni">🚛</span><span class="nl">حمّل</span></button>
     <button class="nb"     onclick="go('van',this);r_van()"><span class="ni">🚗</span><span class="nl">سيارة</span></button>
-    <button class="nb"     onclick="go('more',this)">     <span class="ni">⚙️</span><span class="nl">المزيد</span></button>
+    <button class="nb" id="nb-more" onclick="go('more',this)"><span class="ni">⚙️</span><span class="nl">المزيد</span></button>
   </nav>
 </div>
 
@@ -446,8 +449,8 @@ if(CFG && ('tgToken' in CFG || 'tgChatId' in CFG)){ delete CFG.tgToken; delete C
 let DAYS      = LS.g('days')      || {};
 let CUSTOMERS = LS.g('customers') || [];
 let STORES    = LS.g('stores')    || [];
-let OFFERS    = LS.g('offers')    || [];
-let INV_OFFERS= LS.g('invOffers') || [];
+let OFFERS    = [];   // العروض اتشالت من التطبيق (أكتوبر 2026) — الأسعار من سلطان بدون عروض محلية
+let INV_OFFERS= [];
 let WAREHOUSE = LS.g('warehouse') || [];
 let VAN_STOCK = LS.g('van_stock') || [];  // مخزون السيارة الدائم — مستقل عن اليوم
 let AUDIT     = LS.g('audit')     || [];
@@ -602,7 +605,7 @@ function tgDeposit(amt){
   TG.notify(tgHeader('🏦','توريد للخزنة')+`\n💵 <b>${fmt(amt)} ج</b>`);
 }
 function tgStartDay(startCash, prodsCount){
-  TG.notify(tgHeader('🌅','بدء يوم جديد')+`\n📦 أصناف: ${prodsCount}\n💵 العهدة: ${fmt(startCash)} ج\n📅 ${TODAY}`);
+  TG.notify(tgHeader('🌅','بدء يوم جديد')+`\n📦 أصناف: ${prodsCount}\n📅 ${TODAY}`);
 }
 function tgCloseDay(stats, actual){
   const diff=actual-stats.expected;
@@ -683,7 +686,22 @@ function newDayRecord(date){
 
 // loadDay — load today's record only
 function loadDay(){
+  pruneOldDays();
   CDAY = DAYS[TODAY] || null;
+}
+// سجلات الأيام الأقدم من أسبوع بتتشال من التطبيق (الأصل موجود في البرنامج الرئيسي).
+// ما بتتشالش لو فيه مبيعات لسه ما اتزامنتش، علشان ما نخسرش حاجة.
+const DAYS_KEEP = 7;
+function pruneOldDays(){
+  try{
+    if(SYNC_QUEUE.some(e=>e.status==='pending')) return;
+    const limit = new Date(Date.now() - DAYS_KEEP*86400000).toISOString().split('T')[0];
+    let changed = false;
+    Object.keys(DAYS).forEach(d=>{
+      if(d < limit && d !== TODAY){ delete DAYS[d]; changed = true; }
+    });
+    if(changed) LS.s('days', DAYS);
+  }catch(e){ console.warn('pruneOldDays', e); }
 }
 
 // migrateToVanStock — one-time migration from old loadedProducts to VAN_STOCK
@@ -775,6 +793,7 @@ function showPrevInvoicesPage(){
       <div style="font-size:17px;font-weight:900;color:var(--orange)">📋 فواتير أيام سابقة (${pending.length})</div>
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:10px">ℹ️ الفواتير هنا بتختفي بعد ${DAYS_KEEP} أيام — لو عايز تشوف فاتورة أقدم ارجع للبرنامج الرئيسي.</div>
     ${pending.length?`<button class="btn btn-lg" style="width:100%;background:var(--red);color:#fff;font-family:Cairo,sans-serif;font-weight:900;border-radius:14px;margin-bottom:14px" onclick="clearAllPrevInvoices()">🗑️ امسح كل الفواتير السابقة 🔐</button>`:''}
     <div class="sec" style="max-height:60vh;overflow-y:auto">${rows}</div>`);
 }
@@ -799,31 +818,6 @@ function clearAllPrevInvoices(){
     toast(`🗑️ تم مسح ${pending.length} فاتورة سابقة`);
     showPrevInvoicesPage();
   });
-}
-
-// ══════════════════════════════════════════════════════════════════
-// ── صفحة الديون القديمة (منفصلة) ────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════
-// عرض فقط — الرصيد الافتتاحي (oldDebt) بيتزامن من رصيد العميل الحقيقي
-// فى سلطان ERP (customers.balance)، وأي تصحيح/تسوية بيتعمل من هناك.
-function showOldDebtsPage(){
-  const withDebt = STORES.filter(s=>(s.oldDebt||0)>0).sort((a,b)=>(b.oldDebt||0)-(a.oldDebt||0));
-  const rows = withDebt.length ? withDebt.map(s=>`
-    <div style="padding:10px 0;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center">
-      <div><div style="font-weight:700;font-size:14px">${s.name}</div>${s.phone?`<div style="font-size:11px;color:var(--t3)">${s.phone}</div>`:''}</div>
-      <span style="font-weight:900;color:var(--orange)">${fmt(s.oldDebt)} ج</span>
-    </div>`).join('') : '<div style="text-align:center;color:var(--t3);padding:20px;font-size:14px">مفيش ديون قديمة مسجلة</div>';
-
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:17px;font-weight:900;color:var(--orange)">💰 الديون القديمة</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-teal" style="margin-bottom:14px">بتتزامن تلقائي من سلطان ERP — أي تصحيح أو تسوية بيتعمل من هناك</div>
-    <div class="sec" style="max-height:60vh;overflow-y:auto">
-      <div class="st">📋 الديون القديمة المسجلة (${withDebt.length})</div>
-      ${rows}
-    </div>`);
 }
 
 function saveDay(){ if(CDAY){ const key=CDAY.date||TODAY; DAYS[key]=CDAY; LS.s('days',DAYS); } }
@@ -1093,7 +1087,7 @@ async function syncVanStockFromSultan(){
   if(SYNC_QUEUE.some(e=>e.kind==='sale' && e.status==='pending')) return {added:0,updated:0,error:null,skipped:true};
   try{
     const { data, error } = await sb.from('van_stock')
-      .select('product_id, qty, products(name, retail_price, wholesale_price, unit, purchase_price, images)')
+      .select('product_id, qty, products(name, code, retail_price, wholesale_price, unit, purchase_price, images)')
       .eq('rep_id', REP.id);
     if(error) return {added:0,updated:0,error:error.message};
 
@@ -1119,12 +1113,13 @@ async function syncVanStockFromSultan(){
       // فهامش الربح فى داشبورد سلطان كان بيظهر أعلى بكتير من الحقيقي.
       const cost = Number(row.products?.purchase_price)||0;
       const img = (row.products?.images && row.products.images[0]) || null;
+      const code = row.products?.code || '';
       let p = VAN_STOCK.find(x=>x.id===row.product_id);
       if(!p){
-        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', price, cost, qty, origQty:qty, unit:row.products?.unit||'', img, _sultanSynced:true});
+        VAN_STOCK.push({id:row.product_id, name:row.products?.name||'صنف', code, price, cost, qty, origQty:qty, unit:row.products?.unit||'', img, _sultanSynced:true});
         added++;
-      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost || p.img!==img)){
-        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name; p.img=img;
+      } else if(p._sultanSynced && (p.qty!==qty || p.price!==price || p.cost!==cost || p.img!==img || p.code!==code)){
+        p.qty=qty; p.price=price; p.cost=cost; p.name=row.products?.name||p.name; p.img=img; p.code=code;
         updated++;
       }
     });
@@ -1505,7 +1500,7 @@ function updateSyncBadge(){
   if(!d) return;
   if(!pending){ d.style.display='none'; return; }
   d.style.display='inline-block';
-  d.textContent = failed ? `⚠️ ${pending}` : `⏳ ${pending}`;
+  d.textContent = failed ? `⚠️ ${pending} فشلت — اضغط` : `⏳ ${pending} لسه ما اتبعتتش`;
   d.title = failed ? 'فيه عمليات فشلت فى المزامنة — راجعها' : 'عمليات معلّقة هتتزامن أول ما النت يرجع';
 }
 
@@ -1827,7 +1822,7 @@ function go(name,btn){
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('on'));
   document.getElementById('pg-'+name).classList.add('on');
   if(btn)btn.classList.add('on');
-  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,offers:r_offers,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
+  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
 }
 const noop=()=>{};
 
@@ -1846,10 +1841,6 @@ async function showStartDay(){
       <span class="m-close" onclick="closeModal()">✕</span>
     </div>
     <div class="al al-gold" style="margin-bottom:14px">📅 ${dayName(TODAY)}</div>
-    <div class="ig">
-      <div class="il">💰 العهدة الابتدائية (ج)</div>
-      <input type="number" id="sd-cash" class="ifield" placeholder="مثال: 300" value="0">
-    </div>
     <div class="sec" style="margin-bottom:14px">
       <div class="st">📦 مخزون العربية</div>
       ${readyCount?`<div class="al al-teal">✅ عندك ${readyCount} صنف جاهز فى العربية (متزامن من سلطان)</div>`:
@@ -1860,7 +1851,7 @@ async function showStartDay(){
 
 function confirmStartDay(){
   autoBackup();
-  const startCash = parseFloat(document.getElementById('sd-cash')?.value)||0;
+  const startCash = 0;   // العهدة اتشالت من التطبيق (أكتوبر 2026)
   const readyCount = VAN_STOCK.filter(p=>p.qty>0).length;
   if(CDAY){
     // New shift — just add cash and log
@@ -1904,12 +1895,10 @@ function showCloseDay(){
     </div>
     <div class="sec" style="margin-bottom:14px">
       <div class="st">💵 تسوية النقدية</div>
-      <div class="row"><span class="rl">عهدة البداية</span><span class="rv co">+${fmt(CDAY.startCash)} ج</span></div>
       <div class="row"><span class="rl">مبيعات نقدي</span><span class="rv cg">+${fmt(stats.totalCash)} ج</span></div>
       <div class="row"><span class="rl">تحصيل</span><span class="rv ct">+${fmt(stats.totalCollect)} ج</span></div>
       <div class="row"><span class="rl">مرتجع نقدي</span><span class="rv cr">−${fmt(stats.totalReturnsCash)} ج</span></div>
       <div class="row"><span class="rl">مصروفات</span><span class="rv cx">−${fmt(stats.totalExpenses)} ج</span></div>
-      <div class="row"><span class="rl">توريد</span><span class="rv cp">−${fmt(stats.totalDeposits)} ج</span></div>
       <div class="row" style="border-top:2px solid var(--bdr);margin-top:6px;padding-top:10px">
         <span style="font-weight:900;color:var(--t2)">المفروض مع المندوب</span>
         <span style="font-size:18px;font-weight:900;color:var(--g)">${fmt(stats.expected)} ج</span>
@@ -1927,6 +1916,10 @@ function showCloseDay(){
       </div>`;
       return '<div class="al al-g" style="margin-bottom:10px">✅ كل البضاعة اتمرتجعت أو اتباعت</div>';
     })()}
+    ${(()=>{
+      const n = SYNC_QUEUE.filter(e=>e.status==='pending').length;
+      return n ? `<div class="al al-o" style="margin-bottom:10px">⚠️ فيه <strong>${n}</strong> عملية لسه ما اتبعتتش للبرنامج الرئيسي — اتأكد إن النت شغال وانتظر لحد ما تتزامن قبل الإغلاق.</div>` : '';
+    })()}
     <button class="btn btn-r btn-xl" onclick="confirmCloseDay()">إغلاق اليوم نهائياً 🌙</button>`);
   // store expected for diff calc
   window._expectedCash = stats.expected;
@@ -1943,6 +1936,8 @@ function calcDiff(){
 }
 
 function confirmCloseDay(){
+  const unsynced = SYNC_QUEUE.filter(e=>e.status==='pending').length;
+  if(unsynced && !confirm(`⚠️ فيه ${unsynced} عملية لسه ما اتبعتتش للبرنامج الرئيسي.\nالأفضل تستنى لحد ما تتزامن. تقفل اليوم برضه؟`)) return;
   const actual = parseFloat(document.getElementById('cd-actual')?.value)||0;
   const stats  = calcDayStats();
   CDAY.status  = 'closed';
@@ -1972,8 +1967,9 @@ function calcDayStats(){
   return a+r.qty*r.unit;
 },0);
   const totalExpenses= CDAY.expenses.reduce((a,e)=>a+e.amt,0);
-  const totalDeposits= CDAY.deposits.reduce((a,d)=>a+d.amt,0);
-  const expected     = (CDAY.startCash||0)+totalCash+totalCollect-totalReturnsCash-totalExpenses-totalDeposits;
+  const totalDeposits= 0;   // التوريد والعهدة اتشالوا من التطبيق (أكتوبر 2026): الفلوس بتتحوّل من سلطان ERP
+  // المفروض مع المندوب = نقدي + تحصيل − مرتجع نقدي − مصروفات
+  const expected     = totalCash+totalCollect-totalReturnsCash-totalExpenses;
   const visits       = CDAY.visits.length;
   const soldVisits   = CDAY.visits.filter(v=>v.status==='sold').length;
   return {totalSales,totalCash,totalDebt,totalCollect,totalReturns,totalReturnsCash,totalExpenses,totalDeposits,expected,visits,soldVisits};
@@ -2024,10 +2020,63 @@ function r_sell(){
   }
 
   const prods  = VAN_STOCK.filter(p=>p.qty>0);
-  const cartT  = cart.reduce((a,c)=>{const r=cprice(c.prodId,c.qty);return a+r.total;},0);
-  const cartN  = cart.length;
 
-  const cartBar = cartN ? `
+  // الصفحة بتتبني مرة واحدة؛ بعد كده الضغط على صنف بيحدّث الصف والشريط بس (من غير ما القايمة
+  // تتبني من جديد): القايمة ما بتقفزش، البحث ما بيتمسحش، والكيبورد ما بيقفلش.
+  pg.innerHTML=`
+  <div id="sell-bar"></div>
+  <div class="sec">
+    <div class="st">🛒 أصناف اليوم (${prods.length})
+      <span style="display:flex;gap:8px">
+        <span class="st-a" onclick="requireAdmin('إدارة أصناف اليوم',clearDayProducts)">تعديل/حذف 🔐</span>
+        <span class="st-a" onclick="go('more',document.getElementById('nb-more'))">⚙️ إعدادات</span>
+      </span>
+    </div>
+    <input class="sbox" id="sell-search" placeholder="🔍 ابحث بالاسم أو الكود..." oninput="filterSell(this.value)">
+    <div id="sell-list"></div>
+  </div>`;
+  sellRenderList();
+  sellUpdateBar();
+}
+
+// ── صف صنف في قايمة البيع: كمية بـ+ و− أو كتابة مباشرة، وزرار "الكل" ──
+function sellRowHtml(p){
+  const ci  = cart.find(c=>c.prodId===p.id);
+  const off = OFFERS.find(o=>o.active&&o.prodId===p.id);
+  const low = p.qty>0&&p.qty<=5;
+  const right = ci
+    ? `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+         <div class="qpill"><button onclick="event.stopPropagation();adjC('${p.id}',-1)">−</button><input class="qin" type="number" inputmode="decimal" min="0" max="${p.qty}" step="any" value="${ci.qty}" onclick="event.stopPropagation()" onchange="sellSetQty('${p.id}',this.value)"><button onclick="event.stopPropagation();adjC('${p.id}',1)">+</button></div>
+         <span class="vall" onclick="event.stopPropagation();sellSetQty('${p.id}',${p.qty})">الكل (${fmt(p.qty)})</span>
+       </div>`
+    : `<div class="vpick">${p.qty===0?'نفد':fmt(p.qty)}</div>`;
+  return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" id="sr-${p.id}" onclick="tapProd('${p.id}')">
+    <div class="pemoji">${prodVisualHtml(p)}</div>
+    <div class="pinfo">
+      <div class="pname" style="white-space:normal;line-height:1.35;font-size:14px">${vlpEsc(p.name)}</div>
+      <div class="pprice">${fmt(p.price)} ج/وحدة</div>
+      <div class="pavail">${p.qty===0?'<span style="color:var(--red)">نفد</span>':'متاح: '+fmt(p.qty)+(low?' ⚠️':'')}</div>
+      ${off?`<div class="ptag">🎁 ${vlpEsc(off.name)}</div>`:''}
+    </div>
+    ${right}
+  </div>`;
+}
+
+function sellRenderList(){
+  const list=document.getElementById('sell-list'); if(!list) return;
+  const q=(document.getElementById('sell-search')?.value||'').trim().toLowerCase();
+  const prods=VAN_STOCK.filter(p=>p.qty>0 && (!q || (p.name||'').toLowerCase().includes(q) || String(p.code||'').toLowerCase().includes(q)));
+  list.innerHTML = prods.map(sellRowHtml).join('') ||
+    (VAN_STOCK.some(p=>p.qty>0)
+      ? '<div style="color:var(--t3);text-align:center;padding:14px">لا نتائج</div>'
+      : '<div style="text-align:center;padding:36px 0;color:var(--t3)"><div style="font-size:40px;margin-bottom:12px">📦</div><div style="font-size:14px">لا توجد أصناف<br>حمّل عربيتك من تبويب "🚛 حمّل"</div></div>');
+}
+
+function sellUpdateBar(){
+  const bar=document.getElementById('sell-bar'); if(!bar) return;
+  const cartT = cart.reduce((a,c)=>{const r=cprice(c.prodId,c.qty);return a+r.total;},0);
+  const cartN = cart.length;
+  bar.innerHTML = cartN ? `
   <div class="cart-bar">
     <div>
       <div style="font-size:20px;font-weight:900;color:var(--g)">${fmt(cartT)} ج</div>
@@ -2039,94 +2088,40 @@ function r_sell(){
     </div>
   </div>` :
   `<div style="background:var(--bg3);border-radius:13px;padding:13px;text-align:center;color:var(--t3);font-size:14px;margin-bottom:12px;border:1px dashed var(--bdr)">اضغط على أي صنف لإضافته للسلة 👇</div>`;
+}
 
-  // Stock warnings
-  const lowProds = prods.filter(p=>p.qty>0&&p.qty<=5);
-  const warnHtml = '';
-  const zeroProds = prods.filter(p=>p.qty===0);
-  const zeroHtml = '';
+function sellUpdateRow(pid){
+  const el=document.getElementById('sr-'+pid);
+  if(el){
+    const ci=cart.find(c=>c.prodId===pid), inp=el.querySelector('.qin');
+    if(ci && inp){ inp.value=ci.qty; el.classList.add('sel'); }      // نفس الصف يفضل زي ما هو (الفوكس والكيبورد)
+    else { const p=vanFind(pid); if(p) el.outerHTML=sellRowHtml(p); }
+  }
+  sellUpdateBar();
+}
 
-  const prodsHtml = prods.length ? prods.map(p=>{
-    const ci  = cart.find(c=>c.prodId===p.id);
-    const off = OFFERS.find(o=>o.active&&o.prodId===p.id);
-    const low = p.qty>0&&p.qty<=5;
-    return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" onclick="tapProd('${p.id}')">
-      <div class="pemoji">${prodVisualHtml(p)}</div>
-      <div class="pinfo">
-        <div class="pname">${p.name}</div>
-        <div class="pprice">${fmt(p.price)} ج/وحدة</div>
-        <div class="pavail">${p.qty===0?'<span style="color:var(--red)">نفد</span>':'متاح: '+p.qty+(low?' ⚠️':'')}</div>
-        ${off?`<div class="ptag">🎁 ${off.name}</div>`:''}
-      </div>
-      ${ci?`<div class="qpill">
-        <button onclick="event.stopPropagation();adjC('${p.id}',-1)">−</button>
-        <span>${ci.qty}</span>
-        <button onclick="event.stopPropagation();adjC('${p.id}',1)">+</button>
-      </div>`:`<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">${p.qty===0?'نفد':p.qty}</div>`}
-    </div>`;
-  }).join('') :
-  `<div style="text-align:center;padding:36px 0;color:var(--t3)"><div style="font-size:40px;margin-bottom:12px">📦</div><div style="font-size:14px">لا توجد أصناف<br>أضف بضاعة عند بدء اليوم</div></div>`;
-
-  pg.innerHTML=`
-  ${cartBar}
-  <div class="sec">
-    <div class="st">🛒 أصناف اليوم (${prods.length})
-      <span style="display:flex;gap:8px">
-        <span class="st-a" onclick="requireAdmin('إدارة أصناف اليوم',clearDayProducts)">تعديل/حذف 🔐</span>
-        <span class="st-a" onclick="go('more',document.querySelectorAll('.nb')[9])">⚙️ إعدادات</span>
-      </span>
-    </div>
-    ${warnHtml}${zeroHtml}
-    <input class="sbox" id="sell-search" placeholder="🔍 ابحث بالاسم..." oninput="filterSell(this.value)">
-    <div id="sell-list">${prodsHtml}</div>
-  </div>`;
+function sellSetQty(pid,val){
+  const p=vanFind(pid); if(!p) return;
+  let q=parseFloat(val)||0;
+  if(q>p.qty){ q=p.qty; toast('الكمية أكتر من المتاح','err'); }
+  const ci=cart.find(c=>c.prodId===pid);
+  if(q<=0) cart=cart.filter(c=>c.prodId!==pid);
+  else if(ci) ci.qty=q; else cart.push({prodId:pid,qty:q});
+  saveCart();
+  sellUpdateRow(pid);
 }
 
 function tapProd(pid){
-  const p=vanFind(pid); if(!p||p.qty===0)return;
-  if(!cart.find(c=>c.prodId===pid)) cart.push({prodId:pid,qty:1});
-  saveCart();
-  // Fix 1: Don't clear search — keep filtered list stable, just re-render list
-  const q=document.getElementById('sell-search')?.value||'';
-  r_sell();
-if(q){ document.getElementById('sell-search').value=q; filterSell(q); }
+  const p=vanFind(pid); if(!p||p.qty===0) return;
+  if(!cart.find(c=>c.prodId===pid)) sellSetQty(pid,1);
 }
 function adjC(pid,d){
-  const ci=cart.find(c=>c.prodId===pid);
-  const p=vanFind(pid);
-  if(!ci)return;
-  ci.qty=Math.max(0,Math.min(p?.qty||999,ci.qty+d));
-  if(ci.qty===0) cart=cart.filter(c=>c.prodId!==pid);
- saveCart();
-const q2=document.getElementById('sell-search')?.value||'';
-r_sell();
-if(q2){ document.getElementById('sell-search').value=q2; filterSell(q2); }
+  const ci=cart.find(c=>c.prodId===pid); if(!ci) return;
+  sellSetQty(pid, ci.qty+d);
 }
-function clearCart(){ cart=[]; activeInvOffer=null; saveCart(); r_sell(); }
+function clearCart(){ cart=[]; activeInvOffer=null; saveCart(); sellRenderList(); sellUpdateBar(); }
 
-function filterSell(q){
-  const list=document.getElementById('sell-list'); if(!list)return;
-  const prods=VAN_STOCK.filter(p=>p.qty>0&&(!q||p.name.includes(q)||(p.name.toLowerCase().includes(q.toLowerCase()))));
-  list.innerHTML=prods.map(p=>{
-    const ci=cart.find(c=>c.prodId===p.id);
-    const off=OFFERS.find(o=>o.active&&o.prodId===p.id);
-    const low=p.qty>0&&p.qty<=5;
-    return `<div class="prow ${p.qty===0?'out':''} ${ci?'sel':''} ${low&&!ci?'warn':''}" onclick="tapProd('${p.id}')">
-      <div class="pemoji">${prodVisualHtml(p)}</div>
-      <div class="pinfo">
-        <div class="pname">${p.name}</div>
-        <div class="pprice">${fmt(p.price)} ج/وحدة</div>
-        <div class="pavail">${p.qty===0?'<span style="color:var(--red)">نفد</span>':'متاح: '+p.qty+(low?' ⚠️':'')}</div>
-        ${off?`<div class="ptag">🎁 ${off.name}</div>`:''}
-      </div>
-      ${ci?`<div class="qpill">
-        <button onclick="event.stopPropagation();adjC('${p.id}',-1)">−</button>
-        <span>${ci.qty}</span>
-        <button onclick="event.stopPropagation();adjC('${p.id}',1)">+</button>
-      </div>`:`<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">${p.qty===0?'نفد':p.qty}</div>`}
-    </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:14px">لا نتائج</div>';
-}
+function filterSell(q){ sellRenderList(); }
 
 // price calc with offers — overridePriceMap اختياري: لو موجود وفيه سعر
 // لصنف بعينه، بيغلب سعر العربية الأساسي (مستوى سعر العميل بدل مستوى
@@ -2166,6 +2161,63 @@ async function resolveCustPriceMap(custId){
   return LEVEL_PRICE_MAPS[cu.priceLevelCode];
 }
 
+
+// ══════════════════════════════════════════════════════════════════
+// ── اختيار عميل بالبحث (بدل القايمة الطويلة) ────────────────────────
+// بيتحط مكان <select> العميل في شاشة الدفع والتحصيل ومرتجع العميل. الـid بتاعه بيفضل
+// input مخفي (value = معرّف العميل أو '' للعابر أو '_new' لعميل جديد) علشان باقي الكود
+// يقرأ document.getElementById(id).value زي ما كان بيقرأ من الـselect بالظبط.
+// ══════════════════════════════════════════════════════════════════
+const CPK = {};   // id -> { list, special, onPick }
+function custBalanceOf(c){
+  const st = STORES.find(s=>s.id===c.id);
+  return (c.debt||0) + (st?.oldDebt||0);
+}
+function cpkHtml(id, placeholder){
+  return `<div class="cpk" style="position:relative">
+    <input type="text" class="ifield" id="cpk-${id}-q" placeholder="${placeholder}" autocomplete="off" oninput="cpkRender('${id}')" onfocus="cpkRender('${id}')" style="transition:.2s">
+    <input type="hidden" id="${id}" value="">
+    <div class="cpk-list" id="cpk-${id}-list" style="display:none"></div>
+  </div>`;
+}
+function cpkInit(id, list, special, onPick){
+  CPK[id] = { list: [...list].sort((a,b)=>(a.name||'').localeCompare(b.name||'','ar')), special: special||[], onPick };
+}
+function cpkRender(id){
+  const st = CPK[id]; const box = document.getElementById('cpk-'+id+'-list'); const qEl = document.getElementById('cpk-'+id+'-q');
+  if(!st || !box || !qEl) return;
+  const q = qEl.value.trim().toLowerCase();
+  const sp = st.special.filter(s=>!q || s.label.toLowerCase().includes(q));
+  const items = st.list.filter(c=>!q || (c.name||'').toLowerCase().includes(q) || (c.phone||'').includes(q)).slice(0,40);
+  box.innerHTML =
+    sp.map(s=>`<div class="cpk-item" onclick="cpkPick('${id}','${s.value}')"><b>${vlpEsc(s.label)}</b></div>`).join('') +
+    items.map(c=>{
+      const bal = custBalanceOf(c);
+      const star = c.priceLevelCode && REP && c.priceLevelCode!==REP.priceLevelCode ? ' ⭐' : '';
+      return `<div class="cpk-item" onclick="cpkPick('${id}','${c.id}')"><span><b>${vlpEsc(c.name)}</b>${star}${c.phone?`<small style="color:var(--t3);display:block">${vlpEsc(c.phone)}</small>`:''}</span>`
+        + `<span class="cpk-bal ${bal>0?'d':''}">${bal>0?fmt(bal)+' ج':'—'}</span></div>`;
+    }).join('') ||
+    '<div style="padding:12px;text-align:center;color:var(--t3);font-size:13px">لا نتائج</div>';
+  box.style.display = 'block';
+}
+function cpkPick(id, value){
+  const st = CPK[id]; if(!st) return;
+  const hid = document.getElementById(id), qEl = document.getElementById('cpk-'+id+'-q'), box = document.getElementById('cpk-'+id+'-list');
+  if(hid) hid.value = value;
+  const sp = st.special.find(s=>s.value===value);
+  const c = st.list.find(x=>x.id===value);
+  if(qEl) qEl.value = sp ? (value ? '' : '') : (c?.name||'');
+  if(qEl) qEl.placeholder = sp ? (value ? '' : sp.label) : qEl.placeholder;
+  if(sp && value==='_new' && qEl){ qEl.value = ''; qEl.placeholder = '+ عميل جديد'; }
+  if(box) box.style.display = 'none';
+  if(st.onPick) st.onPick(value);
+}
+// أي ضغطة برّه الاختيار تقفل القايمة
+document.addEventListener('click', e=>{
+  if(!e.target.closest || e.target.closest('.cpk')) return;
+  document.querySelectorAll('.cpk-list').forEach(b=>b.style.display='none');
+});
+
 // ── CHECKOUT ──────────────────────────────────────────────────────
 let _checkoutCustId = '';
 function buildCheckoutPricing(overrideMap){
@@ -2203,7 +2255,7 @@ function openCheckout(){
     });
     invHtml+='</div>';
   }
-  const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${c.debt>0?' ('+fmt(c.debt)+' ج)':''}${c.priceLevelCode&&c.priceLevelCode!==REP.priceLevelCode?' ⭐':''}</option>`).join('');
+  cpkInit('ck-cust', CUSTOMERS, [{value:'',label:'عميل عابر (نقدي فقط)'},{value:'_new',label:'+ عميل جديد'}], ()=>onCustSel());
 
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
@@ -2218,11 +2270,7 @@ function openCheckout(){
     </div>
     <div class="ig">
       <div class="il">العميل ${`<span style="color:var(--orange);font-size:12px">(مطلوب للآجل)</span>`}</div>
-      <select id="ck-cust" class="ifield" onchange="onCustSel()" style="transition:.2s">
-        <option value="">عميل عابر (نقدي فقط)</option>
-        ${custOpts}
-        <option value="_new">+ عميل جديد</option>
-      </select>
+      ${cpkHtml('ck-cust','🔍 عميل عابر (نقدي) — اكتب للبحث عن عميل')}
       <div id="ck-level-note" style="display:none;font-size:12px;color:var(--gold);margin-top:5px">⭐ الأسعار دي على مستوى سعر العميل الخاص</div>
     </div>
     <div id="new-cust-row" style="display:none;margin-bottom:10px">
@@ -2266,7 +2314,7 @@ function doSell(isDebt){
     const newName=document.getElementById('new-cust-n')?.value.trim();
     if(!custSel && !newName){
       // Flash the customer select in red
-      const sel=document.getElementById('ck-cust');
+      const sel=document.getElementById('cpk-ck-cust-q');
       if(sel){ sel.style.borderColor='var(--red)'; setTimeout(()=>sel.style.borderColor='',2000); }
       toast('⚠️ الآجل يحتاج اسم العميل — اختر عميل أو اكتب اسم جديد','err');
       return;
@@ -2463,33 +2511,11 @@ function r_ledger(){
   <div class="sec">
     <div class="st">🔵 تسجيل تحصيل</div>
     <div class="ig"><div class="il">العميل</div>
-      <select id="col-cust" class="ifield"><option value="">اختر العميل</option>
-      ${CUSTOMERS.filter(c=>{
-        const store=STORES.find(s=>s.id===c.id);
-        return (c.debt||0)+(store?.oldDebt||0)>0;
-      }).map(c=>{
-        const store=STORES.find(s=>s.id===c.id);
-        const total=(c.debt||0)+(store?.oldDebt||0);
-        return `<option value="${c.id}">${c.name} — ${fmt(total)} ج</option>`;
-      }).join('')}
-      </select>
+      ${(cpkInit('col-cust', CUSTOMERS.filter(c=>custBalanceOf(c)>0), []),'')}
+      ${cpkHtml('col-cust','🔍 اختر العميل — اكتب للبحث')}
     </div>
     <div class="ig" style="margin-bottom:10px"><div class="il">المبلغ</div><input type="number" id="col-amt" class="ifield" placeholder="0"></div>
     <button class="btn btn-teal btn-lg" onclick="doCollect()">✓ تسجيل تحصيل</button>
-  </div>
-  <div class="sec">
-    <button class="btn btn-o btn-lg" style="width:100%" onclick="showOldDebtsPage()">💰 الديون القديمة ←</button>
-  </div>
-  <div class="sec">
-    <div class="st">💵 العهدة</div>
-    <div class="al al-gold" style="margin-bottom:10px">العهدة الحالية: <b>${fmt(CDAY?.startCash||0)} ج</b></div>
-    <button class="btn btn-gold btn-lg" style="width:100%" onclick="showAddMidCash()">➕ إضافة عهدة في منتصف اليوم</button>
-  </div>
-  <div class="sec">
-    <div class="st">💸 توريد للخزنة 🔐</div>
-    <div class="ig"><div class="il">المبلغ</div><input type="number" id="dep-amt" class="ifield" placeholder="0"></div>
-    <div class="ig" style="margin-bottom:10px"><div class="il">ملاحظة</div><input type="text" id="dep-note" class="ifield" placeholder="اختياري"></div>
-    <button class="btn btn-adm btn-lg" onclick="requireAdmin('تأكيد توريد نقدية',doDeposit)">توريد للخزنة 💸 🔐</button>
   </div>
   <div class="sec">
     <div class="st">🛒 مصروف</div>
@@ -2551,7 +2577,7 @@ function showCashBrief(){
     <div style="text-align:center;padding:10px 0 20px">
       <div style="font-size:14px;color:var(--admin);font-weight:700;margin-bottom:16px">💵 إجمالي الفلوس في الإيد</div>
       <div style="font-size:52px;font-weight:900;color:var(--g)">${fmt(s.expected)} ج</div>
-      <div style="font-size:13px;color:var(--t2);margin-top:8px">عهدة: ${fmt(CDAY.startCash)} + نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
+      <div style="font-size:13px;color:var(--t2);margin-top:8px">نقدي: ${fmt(s.totalCash)} + تحصيل: ${fmt(s.totalCollect)} − مرتجع: ${fmt(s.totalReturnsCash)} − مصروفات: ${fmt(s.totalExpenses)} − توريد: ${fmt(s.totalDeposits)}</div>
       <div style="font-size:11px;color:var(--t3);margin-top:4px">(ده حساب مبني على حركاتك النهارده بس)</div>
       <div style="margin-top:18px;padding-top:16px;border-top:1px dashed var(--bdr)">
         <div style="font-size:12.5px;color:var(--t2);margin-bottom:6px">🏦 الرصيد الفعلي في خزنتك على سلطان الآن</div>
@@ -2808,59 +2834,6 @@ function doCollect(){
   toast(`✅ تحصيل ${fmt(amt)} ج`); r_ledger();
 }
 
-// ── إضافة عهدة في منتصف اليوم ─────────────────────────────────────
-function showAddMidCash(){
-  if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900;color:var(--gold)">💵 إضافة عهدة</div>
-      <span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="al al-gold" style="margin-bottom:14px">
-      العهدة الحالية: <b>${fmt(CDAY.startCash)} ج</b>
-    </div>
-    <div class="ig"><div class="il">المبلغ المضاف (ج)</div>
-      <input type="number" id="mid-cash-amt" class="ifield" placeholder="مثال: 200">
-    </div>
-    <div class="ig" style="margin-bottom:14px"><div class="il">ملاحظة</div>
-      <input type="text" id="mid-cash-note" class="ifield" placeholder="مثال: عهدة إضافية من المدير">
-    </div>
-    <button class="btn btn-gold btn-xl" onclick="confirmAddMidCash()">إضافة العهدة 💵</button>`);
-}
-
-function confirmAddMidCash(){
-  const amt=parseFloat(document.getElementById('mid-cash-amt')?.value)||0;
-  const note=document.getElementById('mid-cash-note')?.value.trim()||'عهدة إضافية';
-  if(amt<=0){toast('أدخل المبلغ','err');return;}
-  CDAY.startCash=(CDAY.startCash||0)+amt;
-  // Log it as a special deposit record
-  CDAY.deposits=CDAY.deposits||[];
-  CDAY.midCashLog=CDAY.midCashLog||[];
-CDAY.midCashLog.push({id:uid(),amt,note,ts:Date.now()});
-  saveDay();
-  auditLog('إضافة عهدة',`${fmt(amt)} ج — ${note}`);
-  TG.notify(tgHeader('💵','إضافة عهدة')+`
-💵 <b>${fmt(amt)} ج</b>
-📝 ${note}`);
-  closeModal();
-  toast(`✅ تم إضافة عهدة ${fmt(amt)} ج`);
-  r_ledger();
-}
-
-function doDeposit(){
-  const amt=parseFloat(document.getElementById('dep-amt')?.value)||0;
-  const note=document.getElementById('dep-note')?.value.trim();
-  if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
-  if(amt<=0){toast('أدخل المبلغ','err');return;}
-  const depTs=Date.now();
-  CDAY.deposits.push({id:uid(),amt,note,ts:depTs});
-  auditLog('توريد خزنة',`${fmt(amt)} ج`);
-  tgDeposit(amt);
-  saveDay(); toast(`💸 تم التوريد ${fmt(amt)} ج`); r_ledger();
-  // ★ مزامنة حقيقية مع سلطان — التوريد ده فلوس حقيقية بتتحرك من خزنة
-  // المندوب للخزنة الرئيسية، لازم سلطان يعرف بيها زي أي حركة مالية تانية
-  if(REP) queueSync('deposit', {amt, note, ts:depTs});
-}
 function doExpense(){
   const cat=document.getElementById('exp-cat')?.value;
   const amt=parseFloat(document.getElementById('exp-amt')?.value)||0;
@@ -3095,7 +3068,6 @@ function showCustStatement(custId){
       <div class="kcard"><div class="kc-val ct">${fmt(totalCollected)}</div><div class="kc-lbl">محصّل ج</div></div>
       <div class="kcard"><div class="kc-val ${totalDebt>0?'cr':'cg'}">${fmt(totalDebt)}</div><div class="kc-lbl">رصيد ج</div></div>
     </div>
-    ${oldDebt>0?`<div class="al al-o" style="margin-bottom:10px">دين قديم: ${fmt(oldDebt)} ج</div>`:''}
     <div class="sec" style="margin-bottom:10px">
       <div class="st">آخر المشتريات</div>
       ${salesRows||'<div style="color:var(--t3);text-align:center;padding:10px">لا مشتريات</div>'}
@@ -3119,7 +3091,6 @@ function editCustomer(custId){
     <div class="ig"><div class="il">الاسم</div><input type="text" id="ec-name" class="ifield" value="${cust.name}"></div>
     <div class="ig"><div class="il">الهاتف</div><input type="tel" id="ec-phone" class="ifield" value="${cust.phone||''}"></div>
     <div class="ig"><div class="il">العنوان</div><input type="text" id="ec-addr" class="ifield" value="${store.address||''}"></div>
-    ${(store.oldDebt||0)>0?`<div style="font-size:12.5px;color:var(--t3);margin-bottom:10px">💰 رصيد افتتاحي: ${fmt(store.oldDebt)} ج — بيتزامن من رصيد العميل فى سلطان ERP، مش بيتعدّل من هنا</div>`:''}
     <button class="btn btn-g btn-xl" style="margin-top:8px;width:100%" onclick="saveCustomerEdit('${custId}')">✅ حفظ التعديلات</button>
     <div class="sec" style="margin-top:14px">
       <div class="st">🔒 إعدادات الآجل</div>
@@ -3244,7 +3215,7 @@ function confirmWarehouseReturn(){
 // ── مرتجع العميل (Multi-product) ─────────────────────────────────
 function showCustomerReturn(){
   if(!CDAY){toast('ابدأ يوماً أولاً','err');return;}
-  const custOpts=CUSTOMERS.map(c=>`<option value="${c.id}">${c.name}${(c.debt||0)>0?' — مديون '+fmt(c.debt)+' ج':''}</option>`).join('');
+  cpkInit('cr-cust', CUSTOMERS, [{value:'',label:'عميل عابر (بدون خصم دين)'}]);
   const prodsHtml=VAN_STOCK.map(p=>`
     <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr)">
       <span style="font-size:20px">${p.emoji||'📦'}</span>
@@ -3264,10 +3235,7 @@ function showCustomerReturn(){
     </div>
     <div class="ig">
       <div class="il">العميل</div>
-      <select id="cr-cust" class="ifield">
-        <option value="">عميل عابر (بدون خصم دين)</option>
-        ${custOpts}
-      </select>
+      ${cpkHtml('cr-cust','🔍 عميل عابر (بدون خصم دين) — اكتب للبحث')}
     </div>
     <div class="al al-b" style="margin-bottom:10px;font-size:13px">أدخل الكمية المرتجعة لكل صنف (0 = لا يرجع)</div>
     <div style="max-height:250px;overflow-y:auto;margin-bottom:12px">${prodsHtml}</div>
@@ -3627,111 +3595,6 @@ function addToRouteDay(wd){
   if(REP) queueSync('route_add_customer', {dayKey:WEEKDAY_KEYS[wd], wdName:WEEKDAY_NAMES[wd], customerId:id});
   r_route();
 }
-// ══════════════════════════════════════════════════════════════════
-// ── OFFERS PAGE ───────────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════
-function r_offers(){
-  const prods=VAN_STOCK.length?VAN_STOCK:WAREHOUSE;
-  const poHtml=OFFERS.map((o,i)=>{
-    const p=prods.find(x=>x.id===o.prodId);
-    const desc=o.type==='price'?`اشتري ${o.triggerQty}+ ← سعر ${fmt(o.discPrice)} ج`:`اشتري ${o.triggerQty} ← هدية ${o.giftQty}`;
-    return `<div class="ocard">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div><div style="font-size:14px;font-weight:900;color:var(--orange)">🎁 ${o.name}</div>
-        <div style="font-size:12px;color:var(--t2);margin-top:3px">${p?.name||'صنف'} — ${desc}</div></div>
-        <button class="btn btn-r" style="font-size:11px;padding:6px 10px" onclick="requireAdmin('حذف عرض',()=>delOffer(${i}))">حذف</button>
-      </div>
-      <div class="toggle-wrap">
-        <div class="toggle ${o.active?'on':''}" onclick="requireAdmin('تغيير حالة العرض',()=>togOffer(${i}))"></div>
-        <span style="font-size:13px;color:${o.active?'var(--orange)':'var(--t3)'}">${o.active?'مفعّل':'معطّل'}</span>
-      </div>
-    </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:14px;font-size:13px">لا عروض</div>';
-
-  const ioHtml=INV_OFFERS.map((o,i)=>`
-    <div style="background:linear-gradient(135deg,rgba(255,208,0,.07),rgba(0,255,136,.04));border:1px solid rgba(255,208,0,.25);border-radius:12px;padding:13px;margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div><div style="font-size:14px;font-weight:900;color:var(--gold)">🧾 ${o.name}</div>
-        <div style="font-size:12px;color:var(--t2);margin-top:3px">عند ≥ ${fmt(o.minTotal)} ج — ${o.type==='pct'?`خصم ${o.value}%`:o.type==='fixed'?`خصم نقدي ثابت ${fmt(o.value)} ج`:`هدية: ${o.giftDesc}`}</div></div>
-        <button class="btn btn-r" style="font-size:11px;padding:6px 10px" onclick="requireAdmin('حذف عرض فاتورة',()=>delInvOffer(${i}))">حذف</button>
-      </div>
-      <div class="toggle-wrap">
-        <div class="toggle ${o.active?'on':''}" onclick="requireAdmin('تغيير حالة عرض الفاتورة',()=>togInvOffer(${i}))"></div>
-        <span style="font-size:13px;color:${o.active?'var(--gold)':'var(--t3)'}">${o.active?'مفعّل':'معطّل'}</span>
-      </div>
-    </div>`).join('')||'<div style="color:var(--t3);text-align:center;padding:14px;font-size:13px">لا عروض</div>';
-
-  document.getElementById('pg-offers').innerHTML=`
-  <div class="al al-adm">🔐 كل التعديلات على العروض تحتاج رمز المدير</div>
-  <div class="sec"><div class="st">🎁 عروض الصنف</div>${poHtml}
-    <button class="btn btn-o btn-lg" style="margin-top:8px" onclick="requireAdmin('إضافة عرض صنف',showAddOffer)">+ إضافة عرض صنف 🔐</button>
-  </div>
-  <div class="sec"><div class="st">🧾 عروض الفاتورة</div>${ioHtml}
-    <button class="btn btn-gold btn-lg" style="margin-top:8px" onclick="requireAdmin('إضافة عرض فاتورة',showAddInvOffer)">+ إضافة عرض فاتورة 🔐</button>
-  </div>`;
-}
-function togOffer(i){ OFFERS[i].active=!OFFERS[i].active; LS.s('offers',OFFERS); r_offers(); }
-function delOffer(i){ OFFERS.splice(i,1); LS.s('offers',OFFERS); r_offers(); }
-function togInvOffer(i){ INV_OFFERS[i].active=!INV_OFFERS[i].active; LS.s('invOffers',INV_OFFERS); r_offers(); }
-function delInvOffer(i){ INV_OFFERS.splice(i,1); LS.s('invOffers',INV_OFFERS); r_offers(); }
-function showAddOffer(){
-  const prods=(VAN_STOCK.length?VAN_STOCK:WAREHOUSE);
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">🎁 عرض صنف</div><span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="ig"><div class="il">اسم العرض</div><input type="text" id="o-name" class="ifield" placeholder="مثال: عرض الكمية"></div>
-    <div class="ig"><div class="il">الصنف</div><select id="o-prod" class="ifield">${prods.map(p=>`<option value="${p.id}">${p.emoji||'📦'} ${p.name}</option>`).join('')||'<option>لا أصناف</option>'}</select></div>
-    <div class="ig"><div class="il">النوع</div><select id="o-type" class="ifield" onchange="togOT()"><option value="price">💲 سعر خاص</option><option value="gift">🎁 هدية</option></select></div>
-    <div class="ig"><div class="il">الكمية لتفعيل العرض</div><input type="number" id="o-tq" class="ifield" placeholder="10"></div>
-    <div id="o-pr" class="ig"><div class="il">السعر الخاص (ج)</div><input type="number" id="o-dp" class="ifield" placeholder="7"></div>
-    <div id="o-gr" class="ig" style="display:none"><div class="il">كمية الهدية</div><input type="number" id="o-gq" class="ifield" placeholder="1"></div>
-    <button class="btn btn-gold btn-lg" onclick="addOffer()">إضافة</button>`);
-}
-function togOT(){ const t=document.getElementById('o-type')?.value; document.getElementById('o-pr').style.display=t==='price'?'':'none'; document.getElementById('o-gr').style.display=t==='gift'?'':'none'; }
-function addOffer(){
-  const name=document.getElementById('o-name')?.value.trim();
-  const prodId=document.getElementById('o-prod')?.value;
-  const type=document.getElementById('o-type')?.value;
-  const tq=parseInt(document.getElementById('o-tq')?.value)||0;
-  const dp=parseFloat(document.getElementById('o-dp')?.value)||0;
-  const gq=parseInt(document.getElementById('o-gq')?.value)||0;
-  if(!name||!prodId||tq<=0){toast('أكمل البيانات','err');return;}
-  OFFERS.push({id:uid(),name,prodId,type,triggerQty:tq,discPrice:dp,giftQty:gq,active:true});
-  LS.s('offers',OFFERS); toast('✅ تم إضافة العرض'); closeModal(); r_offers();
-}
-function showAddInvOffer(){
-  openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900">🧾 عرض فاتورة</div><span class="m-close" onclick="closeModal()">✕</span>
-    </div>
-    <div class="ig"><div class="il">اسم العرض</div><input type="text" id="io-name" class="ifield" placeholder="خصم الكمية الكبيرة"></div>
-    <div class="ig"><div class="il">الحد الأدنى (ج)</div><input type="number" id="io-min" class="ifield" placeholder="2000"></div>
-    <div class="ig"><div class="il">النوع</div><select id="io-type" class="ifield" onchange="togIOT()"><option value="pct">💲 خصم %</option><option value="fixed">💰 خصم نقدي ثابت</option><option value="gift">🎁 هدية</option></select></div>
-    <div id="io-pr" class="ig"><div class="il">نسبة الخصم %</div><input type="number" id="io-pct" class="ifield" placeholder="5"></div>
-    <div id="io-fx" class="ig" style="display:none"><div class="il">قيمة الخصم الثابت (ج)</div><input type="number" id="io-fixedamt" class="ifield" placeholder="مثال: 50"></div>
-    <div id="io-gr" class="ig" style="display:none"><div class="il">وصف الهدية</div><input type="text" id="io-gd" class="ifield" placeholder="كارتون مياه"></div>
-    <button class="btn btn-gold btn-lg" onclick="addInvOffer()">إضافة</button>`);
-}
-function togIOT(){
-  const t=document.getElementById('io-type')?.value;
-  document.getElementById('io-pr').style.display=t==='pct'?'':'none';
-  document.getElementById('io-fx').style.display=t==='fixed'?'':'none';
-  document.getElementById('io-gr').style.display=t==='gift'?'':'none';
-}
-function addInvOffer(){
-  const name=document.getElementById('io-name')?.value.trim();
-  const min=parseFloat(document.getElementById('io-min')?.value)||0;
-  const type=document.getElementById('io-type')?.value;
-  const pct=parseFloat(document.getElementById('io-pct')?.value)||0;
-  const fixedAmt=parseFloat(document.getElementById('io-fixedamt')?.value)||0;
-  const gd=document.getElementById('io-gd')?.value.trim();
-  if(!name||min<=0){toast('أكمل البيانات','err');return;}
-  const value = type==='fixed' ? fixedAmt : pct;
-  INV_OFFERS.push({id:uid(),name,minTotal:min,type,value,giftDesc:gd||'',active:true});
-  LS.s('invOffers',INV_OFFERS); toast('✅ تم إضافة عرض الفاتورة'); closeModal(); r_offers();
-}
-
 // ══════════════════════════════════════════════════════════════════
 // ── صفحة "حمّل" — المندوب يحمّل عربيته بنفسه (مكان صفحة الطلبات القديمة) ──
 // المندوب داخل بحسابه الحقيقي (إيميل/باسورد)، والـPIN هنا تأكيد إضافي بس قبل
@@ -4232,7 +4095,6 @@ function showDayReport(date){
     </div>
     <div class="row"><span class="rl">الزيارات</span><span class="rv cb">${visits}</span></div>
     <div class="row"><span class="rl">باعوا</span><span class="rv cg">${sold}</span></div>
-    <div class="row"><span class="rl">التوريد</span><span class="rv cp">${fmt(totalDep)} ج</span></div>
     ${rec.closeReport?`<div class="row"><span class="rl">الفعلي</span><span class="rv">${fmt(rec.closeReport.actual)} ج</span></div>
     <div class="row"><span class="rl">الفرق</span><span class="rv ${rec.closeReport.diff>=0?'cg':'cr'}">${rec.closeReport.diff>=0?'+':''}${fmt(rec.closeReport.diff)} ج</span></div>`:''}
     <button class="btn btn-b btn-lg" style="margin-top:10px" onclick="closeModal()">إغلاق</button>`);
@@ -4388,8 +4250,8 @@ function onBakFile(input){
           if(d.DAYS)      { DAYS=d.DAYS;           LS.s('days',DAYS); loadDay(); }
           if(d.CUSTOMERS) { CUSTOMERS=d.CUSTOMERS; LS.s('customers',CUSTOMERS); }
           if(d.STORES)    { STORES=d.STORES;       LS.s('stores',STORES); }
-          if(d.OFFERS)    { OFFERS=d.OFFERS;       LS.s('offers',OFFERS); }
-          if(d.INV_OFFERS){ INV_OFFERS=d.INV_OFFERS; LS.s('invOffers',INV_OFFERS); }
+          
+          
           if(d.WAREHOUSE) { WAREHOUSE=d.WAREHOUSE; LS.s('warehouse',WAREHOUSE); }
           if(d.VAN_STOCK) { VAN_STOCK=d.VAN_STOCK; LS.s('van_stock',VAN_STOCK); }
           if(d.AUDIT)     { AUDIT=d.AUDIT;         LS.s('audit',AUDIT); }
