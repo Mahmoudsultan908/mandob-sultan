@@ -132,6 +132,12 @@ body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-h
 .qpill button{width:34px;height:34px;border:none;background:none;font-size:20px;font-weight:900;color:var(--text);cursor:pointer;border-radius:22px;display:flex;align-items:center;justify-content:center}
 .qpill button:active{background:var(--bg5)}
 .qpill span{font-size:15px;font-weight:900;color:var(--gold);min-width:28px;text-align:center}
+.qin{width:46px;border:none;background:none;text-align:center;font-size:15px;font-weight:900;color:var(--gold);font-family:inherit;outline:none;-moz-appearance:textfield}
+.qin::-webkit-outer-spin-button,.qin::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.vall{font-size:10.5px;color:var(--blue);font-weight:700;cursor:pointer}
+.vpick{background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)}
+.vchip{background:var(--bg3);border:1px solid var(--bdr);color:var(--t2);border-radius:18px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.vchip.on{background:var(--g);color:#000;border-color:var(--g)}
 
 /* CART BAR */
 .cart-bar{background:linear-gradient(135deg,var(--bg4),var(--bg5));border:2px solid var(--g);border-radius:14px;padding:12px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
@@ -361,7 +367,7 @@ function pinTap(e,v){}
   <div id="pg-stores"    class="page"></div>
   <div id="pg-customers" class="page"></div>
   <div id="pg-offers"    class="page"></div>
-  <div id="pg-orders"    class="page"></div>
+  <div id="pg-vload"     class="page"></div>
   <div id="pg-more"      class="page"></div>
   <div id="pg-van"       class="page"></div>
   <div id="pg-route"     class="page"></div>
@@ -374,7 +380,7 @@ function pinTap(e,v){}
     <button class="nb"     onclick="go('route',this)">    <span class="ni">🗺️</span><span class="nl">الخط</span></button>
     <button class="nb"     onclick="go('customers',this)"><span class="ni">👥</span><span class="nl">عملاء</span></button>
     <button class="nb"     onclick="go('offers',this)">   <span class="ni">🎁</span><span class="nl">عروض</span></button>
-    <button class="nb"     onclick="go('orders',this)">   <span class="ni">📋</span><span class="nl">طلبات</span></button>
+    <button class="nb" id="nb-vload" onclick="go('vload',this)"><span class="ni">🚛</span><span class="nl">حمّل</span></button>
     <button class="nb"     onclick="go('van',this);r_van()"><span class="ni">🚗</span><span class="nl">سيارة</span></button>
     <button class="nb"     onclick="go('more',this)">     <span class="ni">⚙️</span><span class="nl">المزيد</span></button>
   </nav>
@@ -444,7 +450,6 @@ let OFFERS    = LS.g('offers')    || [];
 let INV_OFFERS= LS.g('invOffers') || [];
 let WAREHOUSE = LS.g('warehouse') || [];
 let VAN_STOCK = LS.g('van_stock') || [];  // مخزون السيارة الدائم — مستقل عن اليوم
-let ORDERS    = LS.g('orders')    || [];
 let AUDIT     = LS.g('audit')     || [];
 let GOAL      = LS.g('goal')      || {target:0, visitsTarget:0};
 
@@ -471,7 +476,6 @@ let   CDAY    = null;
 
 // UI state — cart persisted to localStorage
 let cart          = LS.g('cart_'+TODAY) || [];
-let orderCart     = [];
 let activeInvOffer= null;
 let sellLock      = false;
 let CUST_TAB      = 'pending'; // 'pending' | 'collected'
@@ -1128,173 +1132,6 @@ async function syncVanStockFromSultan(){
     return {added,updated,error:null};
   }catch(e){ return {added:0,updated:0,error:e.message}; }
 }
-
-// ══════════════════════════════════════════════════════════════════
-// تحميل العربية بنفس المندوب — بند 1، تقرير 2026-07-21. المندوب أصلاً
-// داخل بحسابه الحقيقي (إيميل/باسورد)، الـPIN هنا تأكيد إضافي بس قبل
-// حركة مخزون حساسة، مش بديل عن تسجيل الدخول. عمدًا أونلاين بس (مش
-// جوه طابور المزامنة زي البيع/المرتجع) — التحميل بيحصل عادةً في
-// المخزن نفسه وقت الاتصال، ومحتاج رصيد لحظي حقيقي من inventory_stock
-// عشان نمنع تحميل أكتر من المتاح فعليًا (نفس منطق سلطان ERP الإداري
-// بالظبط — van-stock-load.js — بس هنا المندوب هو اللي بيعمله لنفسه).
-let VL_PICK = { warehouseId: null, stock: {}, products: [], selected: {}, hideZero: true };
-
-async function openVanLoadPicker(){
-  if(!REP){ toast('سجّل دخول أولاً','err'); return; }
-  if(!navigator.onLine){ toast('التحميل محتاج اتصال بالإنترنت','err'); return; }
-  openModal(`<div style="padding:20px;text-align:center"><div style="font-size:28px;margin-bottom:8px">⏳</div>جاري تحميل بيانات المخزن...</div>`);
-  try{
-    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
-    if(!repRow?.van_load_pin){
-      openModal(`<div style="padding:20px;text-align:center">
-        <div style="font-size:32px;margin-bottom:10px">🔒</div>
-        <div style="font-weight:700;margin-bottom:6px">التحميل الذاتي لسه مش مفعّل ليك</div>
-        <div style="font-size:13px;color:var(--t3)">كلّم الأدمن يحدّدلك PIN من شاشة "المندوبين" في سلطان ERP</div>
-      </div>`);
-      return;
-    }
-    const { data: mainWh } = await sb.from('warehouses').select('id,name').eq('is_main', true).limit(1).maybeSingle();
-    if(!mainWh?.id) throw new Error('لا يوجد مخزن رئيسي فى سلطان');
-    const [{ data: stock }, { data: products }] = await Promise.all([
-      sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', mainWh.id),
-      sb.from('products').select('id,name,code,unit,images').eq('is_active', true).order('name'),
-    ]);
-    VL_PICK.warehouseId = mainWh.id;
-    VL_PICK.stock = {};
-    (stock||[]).forEach(s=>{ VL_PICK.stock[s.product_id] = Number(s.qty)||0; });
-    VL_PICK.products = products||[];
-    VL_PICK.selected = {};
-    VL_PICK.hideZero = true;
-    vlRenderPickModal(mainWh.name);
-  }catch(e){ toast('خطأ: '+e.message,'err'); closeModal(); }
-}
-
-function vlRenderPickModal(whName){
-  openModal(`
-  <div style="padding:16px;max-height:82vh;display:flex;flex-direction:column">
-    <div style="font-size:16px;font-weight:900;margin-bottom:3px">🚗 حمّل عربيتك بنفسك</div>
-    <div style="font-size:11.5px;color:var(--t3);margin-bottom:12px">من: ${whName} — مش هتقدر تحمّل أكتر من المتاح فعليًا بالمخزن</div>
-    <input type="text" id="vlPickSearch" placeholder="🔍 بحث بالاسم أو الكود..." oninput="vlRenderPickList(this.value)"
-      style="padding:10px 12px;border-radius:10px;border:1px solid var(--bdr);background:var(--bg3);color:var(--text);font-family:inherit;font-size:14px">
-    <label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-size:12px;color:var(--t2);cursor:pointer">
-      <input type="checkbox" id="vlPickHideZero" ${VL_PICK.hideZero?'checked':''} onchange="vlPickToggleHideZero(this.checked)">
-      إخفاء الأصناف بدون رصيد بالمخزن
-    </label>
-    <div id="vlPickList" style="margin-top:10px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;min-height:200px"></div>
-    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
-      <span id="vlPickCount" style="font-size:12px;color:var(--t3);flex:1">مفيش أصناف متحددة</span>
-      <button class="btn btn-b" onclick="closeModal()">إلغاء</button>
-      <button class="btn btn-g" onclick="vlProceedToPin()">متابعة →</button>
-    </div>
-  </div>`);
-  vlRenderPickList('');
-}
-
-function vlPickToggleHideZero(checked){
-  VL_PICK.hideZero = checked;
-  vlRenderPickList(document.getElementById('vlPickSearch')?.value||'');
-}
-
-function vlRenderPickList(q){
-  const box = document.getElementById('vlPickList');
-  if(!box) return;
-  q = (q||'').trim();
-  let list = q ? VL_PICK.products.filter(p=>(p.name||'').includes(q)||(p.code||'').includes(q)) : VL_PICK.products;
-  if(VL_PICK.hideZero) list = list.filter(p=>(VL_PICK.stock[p.id]||0) > 0);
-  box.innerHTML = list.slice(0,150).map(p=>{
-    const avail = VL_PICK.stock[p.id]||0;
-    const sel = VL_PICK.selected[p.id];
-    const img = p.images && p.images[0];
-    return `<div style="display:flex;align-items:center;gap:10px;padding:9px 10px;border:1.5px solid var(--bdr);border-radius:10px;${avail<=0?'opacity:.4':''}">
-      ${img?`<img src="${img}" style="width:34px;height:34px;object-fit:cover;border-radius:8px;flex-shrink:0">`:'<div style="font-size:22px">📦</div>'}
-      <div style="flex:1;min-width:0">
-        <div style="font-size:13.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</div>
-        <div style="font-size:11px;color:var(--t3)">متاح: ${fmt(avail)} ${p.unit||''}</div>
-      </div>
-      <input type="number" min="0" max="${avail}" step="0.01" value="${sel||''}" placeholder="0" ${avail<=0?'disabled':''}
-        style="width:70px;padding:7px 8px;border-radius:8px;border:1px solid var(--bdr);background:var(--bg4);color:var(--text);font-family:inherit;text-align:center"
-        onchange="vlPickSetQty('${p.id}',this.value,${avail})">
-    </div>`;
-  }).join('') || `<div style="text-align:center;padding:20px;color:var(--t3)">لا توجد نتائج</div>`;
-}
-
-function vlPickSetQty(pid, val, avail){
-  let q = parseFloat(val)||0;
-  if(q > avail){ q = avail; toast('مفيش متاح أكتر من كده بالمخزن','err'); }
-  if(q <= 0) delete VL_PICK.selected[pid];
-  else VL_PICK.selected[pid] = q;
-  const n = Object.keys(VL_PICK.selected).length;
-  const el = document.getElementById('vlPickCount');
-  if(el) el.textContent = n ? `${n} صنف متحدد` : 'مفيش أصناف متحددة';
-  vlRenderPickList(document.getElementById('vlPickSearch')?.value||'');
-}
-
-window.vlProceedToPin = function(){
-  const items = Object.entries(VL_PICK.selected).map(([pid,qty])=>({productId:pid, qty}));
-  if(!items.length){ toast('اختار صنف واحد على الأقل','err'); return; }
-  openModal(`
-  <div style="padding:22px;text-align:center">
-    <div style="font-size:32px;margin-bottom:10px">🔒</div>
-    <div style="font-weight:700;margin-bottom:14px">أدخل PIN التحميل بتاعك للتأكيد</div>
-    <input type="password" inputmode="numeric" id="vlPinInput" maxlength="8" placeholder="••••"
-      style="width:140px;text-align:center;font-size:22px;letter-spacing:6px;padding:10px;border-radius:10px;border:1.5px solid var(--bdr);background:var(--bg3);color:var(--text);font-family:inherit">
-    <div id="vlPinErr" style="color:var(--red);font-size:12px;margin-top:8px;min-height:16px"></div>
-    <div style="margin-top:16px;display:flex;gap:8px">
-      <button class="btn btn-b" style="flex:1" onclick="vlRenderPickModal('')">رجوع</button>
-      <button class="btn btn-g" style="flex:1" onclick="vlConfirmLoad()">✅ تأكيد التحميل</button>
-    </div>
-  </div>`);
-  setTimeout(()=>document.getElementById('vlPinInput')?.focus(),80);
-};
-
-window.vlConfirmLoad = async function(){
-  const pin = (document.getElementById('vlPinInput')?.value||'').trim();
-  const errEl = document.getElementById('vlPinErr');
-  if(!pin){ if(errEl) errEl.textContent='اكتب الـPIN'; return; }
-  const btn = document.querySelector('.modal.open .btn-g');
-  if(btn){ btn.disabled=true; btn.textContent='⏳ جاري التحقق...'; }
-  try{
-    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
-    if(!repRow?.van_load_pin || repRow.van_load_pin !== pin){
-      if(errEl) errEl.textContent='PIN غلط — حاول تاني';
-      if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; }
-      return;
-    }
-    // إعادة التحقق من الرصيد لحظيًا (مش من الكاش) قبل التنفيذ فعليًا —
-    // منعًا لأي تغيّر حصل من وقت ما فتح شاشة الاختيار لحد دلوقتي
-    const pids = Object.keys(VL_PICK.selected);
-    const { data: freshStock } = await sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', VL_PICK.warehouseId).in('product_id', pids);
-    const freshMap = {}; (freshStock||[]).forEach(s=>freshMap[s.product_id]=Number(s.qty)||0);
-    for(const pid of pids){
-      if(VL_PICK.selected[pid] > (freshMap[pid]||0)){
-        const pname = VL_PICK.products.find(p=>p.id===pid)?.name || pid;
-        if(errEl) errEl.textContent = `الرصيد اتغيّر — "${pname}" بقى متاح أقل من اللي طلبته`;
-        if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; }
-        return;
-      }
-    }
-
-    const { count } = await sb.from('van_stock_loads').select('id',{count:'exact',head:true}).eq('rep_id', REP.id).eq('load_date', new Date().toISOString().slice(0,10));
-    const { data: loadRow, error: loadErr } = await sb.from('van_stock_loads').insert({
-      load_no: 'VL-'+Date.now(), warehouse_id: VL_PICK.warehouseId, rep_id: REP.id,
-      load_date: new Date().toISOString().slice(0,10), load_sequence: (count||0)+1,
-      notes: 'تحميل ذاتي من تطبيق مندوب سلطان', created_by: REP.id,
-    }).select('id').single();
-    if(loadErr) throw loadErr;
-    const itemRows = pids.map(pid=>({ load_id: loadRow.id, product_id: pid, qty: VL_PICK.selected[pid],
-      unit_name: VL_PICK.products.find(p=>p.id===pid)?.unit || null }));
-    const { error: itemsErr } = await sb.from('van_stock_load_items').insert(itemRows);
-    if(itemsErr){ await sb.from('van_stock_loads').delete().eq('id', loadRow.id); throw itemsErr; }
-
-    closeModal();
-    toast('✅ اتحمّلت العربية بنجاح ('+pids.length+' صنف)','ok');
-    await syncVanStockFromSultan();
-    if(document.getElementById('pg-van')?.classList.contains('on')) r_van();
-  }catch(e){
-    if(errEl) errEl.textContent = 'خطأ: '+e.message;
-    if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; }
-  }
-};
 
 // ══════════════════════════════════════════════════════════════════
 // طابور المزامنة — العمليات المالية الحقيقية (بيع/تحصيل/مصروف)
@@ -1991,7 +1828,7 @@ function go(name,btn){
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('on'));
   document.getElementById('pg-'+name).classList.add('on');
   if(btn)btn.classList.add('on');
-  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,offers:r_offers,orders:r_orders,more:r_more,route:r_route}[name]||noop)();
+  ({sell:r_sell,ledger:r_ledger,goal:r_goal,stores:r_stores,customers:r_customers,offers:r_offers,vload:r_vload,more:r_more,route:r_route}[name]||noop)();
 }
 const noop=()=>{};
 
@@ -2017,7 +1854,7 @@ async function showStartDay(){
     <div class="sec" style="margin-bottom:14px">
       <div class="st">📦 مخزون العربية</div>
       ${readyCount?`<div class="al al-teal">✅ عندك ${readyCount} صنف جاهز فى العربية (متزامن من سلطان)</div>`:
-        `<div class="al al-r">⚠️ مفيش مخزون محمّل بعد — روح لتبويب "🚗 سيارة" وحمّل عربيتك بنفسك، أو كلّم الأدمن يحمّلهالك من سلطان ERP</div>`}
+        `<div class="al al-r">⚠️ مفيش مخزون محمّل بعد — روح لتبويب "🚛 حمّل" وحمّل عربيتك بنفسك، أو كلّم الأدمن يحمّلهالك من سلطان ERP</div>`}
     </div>
     <button class="btn btn-g btn-xl" onclick="confirmStartDay()">بدء اليوم ✅</button>`);
 }
@@ -3899,119 +3736,299 @@ function addInvOffer(){
 }
 
 // ══════════════════════════════════════════════════════════════════
-// ── ORDERS PAGE ───────────────────────────────────────────────────
+// ── صفحة "حمّل" — المندوب يحمّل عربيته بنفسه (مكان صفحة الطلبات القديمة) ──
+// المندوب داخل بحسابه الحقيقي (إيميل/باسورد)، والـPIN هنا تأكيد إضافي بس قبل
+// حركة مخزون حساسة. عمدًا أونلاين بس (مش جوه طابور المزامنة): التحميل بيحصل عادةً
+// في المخزن نفسه وقت الاتصال، ومحتاج رصيد لحظي حقيقي من inventory_stock عشان نمنع
+// تحميل أكتر من المتاح فعليًا (نفس منطق سلطان ERP الإداري — van-stock-load.js).
+// "حمولتي القياسية" متخزنة في rep_standard_loads، وبتتعتمد بالدالة fn_save_standard_load
+// اللي بتستبدل القديمة كلها مرة واحدة.
 // ══════════════════════════════════════════════════════════════════
-function r_orders(){
-  const allProds=[...WAREHOUSE];
-  VAN_STOCK.forEach(p=>{ if(!allProds.find(w=>w.name===p.name)) allProds.push(p); });
-  const oTotal=orderCart.reduce((a,c)=>a+c.price*c.qty,0);
-  const cartBar=orderCart.length?`
-  <div style="background:linear-gradient(135deg,var(--bg4),var(--bg5));border:2px solid var(--blue);border-radius:13px;padding:12px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-    <div><div style="font-size:20px;font-weight:900;color:var(--blue)">${fmt(oTotal)} ج</div><div style="font-size:12px;color:var(--t2)">${orderCart.length} صنف</div></div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-r" style="padding:8px 12px" onclick="clearOC()">🗑️</button>
-      <button class="btn" style="padding:8px 16px;background:var(--blue);color:#000;font-weight:900;border-radius:12px" onclick="openOrderConfirm()">إرسال 📤</button>
-    </div>
-  </div>`:
-  `<div style="background:var(--bg3);border-radius:12px;padding:12px;text-align:center;color:var(--t3);font-size:13px;margin-bottom:12px;border:1px dashed var(--bdr)">اختر الأصناف التي تريد طلبها 👇</div>`;
+let VLP = { ready:false, loading:false, ts:0, whId:null, whName:'', products:[], stock:{}, van:{}, std:{}, stdMissing:false, cart:{}, q:'', filter:'all', busy:false, pendingStd:null };
+const vlpEsc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  const pList=allProds.map(p=>{
-    const ci=orderCart.find(c=>c.prodId===p.id);
-    return `<div class="prow ${ci?'sel':''}" onclick="tapOP('${p.id}','${p.name.replace(/'/g,"\\'")}','${p.emoji||'📦'}',${p.price})">
-      <div class="pemoji">${prodVisualHtml(p)}</div>
-      <div class="pinfo"><div class="pname">${p.name}</div><div class="pprice">${fmt(p.price)} ج</div></div>
-      ${ci?`<div class="qpill"><button onclick="event.stopPropagation();adjOC('${p.id}',-1)">−</button><span>${ci.qty}</span><button onclick="event.stopPropagation();adjOC('${p.id}',1)">+</button></div>`:
-      `<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">اختر</div>`}
-    </div>`;
-  }).join('')||'<div style="text-align:center;color:var(--t3);padding:24px;font-size:13px">حمّل المخزان من ⚙️ المزيد</div>';
+async function vlpLoadData(){
+  if(!REP) return { error:'سجّل دخول أولاً' };
+  if(!navigator.onLine) return { error:'التحميل محتاج اتصال بالإنترنت' };
+  try{
+    const { data: mainWh, error: whErr } = await sb.from('warehouses').select('id,name').eq('is_main', true).limit(1).maybeSingle();
+    if(whErr || !mainWh?.id) throw new Error('لا يوجد مخزن رئيسي في سلطان');
+    const [stk, prods, van, std] = await Promise.all([
+      sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', mainWh.id),
+      sb.from('products').select('id,name,code,unit,images').eq('is_active', true).order('name'),
+      sb.from('van_stock').select('product_id,qty').eq('rep_id', REP.id),
+      sb.from('rep_standard_loads').select('product_id,qty').eq('rep_id', REP.id),
+    ]);
+    if(stk.error) throw stk.error;
+    if(prods.error) throw prods.error;
+    if(van.error) throw van.error;
+    VLP.whId = mainWh.id; VLP.whName = mainWh.name;
+    VLP.stock = {}; (stk.data||[]).forEach(s=>{ VLP.stock[s.product_id] = Number(s.qty)||0; });
+    VLP.van = {}; (van.data||[]).forEach(s=>{ VLP.van[s.product_id] = Number(s.qty)||0; });
+    // الحمولة القياسية اختيارية: لو الجدول لسه مش موجود نكمّل من غيرها
+    VLP.std = {}; VLP.stdMissing = !!std.error;
+    if(!std.error) (std.data||[]).forEach(s=>{ VLP.std[s.product_id] = Number(s.qty)||0; });
+    VLP.products = prods.data || [];
+    VLP.ready = true; VLP.ts = Date.now();
+    return { error:null };
+  }catch(e){ return { error: e.message || 'خطأ في تحميل البيانات' }; }
+}
 
-  const ordersHtml=[...ORDERS].reverse().slice(0,10).map((o,i)=>`
-    <div class="sec" style="margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <div>
-          <div style="font-size:14px;font-weight:900">${o.custName||'طلب'} — ${o.date}</div>
-          <div style="font-size:12px;color:var(--t2)">${o.lines.length} صنف — ${fmt(o.lines.reduce((a,l)=>a+l.price*l.qty,0))} ج</div>
-        </div>
-        <span style="font-size:11px;padding:3px 8px;border-radius:8px;font-weight:700;${o.sent?'background:rgba(0,255,136,.12);color:var(--g)':'background:rgba(255,208,0,.12);color:var(--gold)'}">${o.sent?'✓ أُرسل':'معلق'}</span>
-      </div>
-      <div style="font-size:12px;color:var(--t3);margin-bottom:8px">${o.lines.map(l=>`${l.emoji||'📦'} ${l.name}×${l.qty}`).join(' | ')}</div>
-      <div style="display:flex;gap:6px">
-        <button class="btn btn-blue" style="flex:1;font-size:12px" onclick="resendOrder(${ORDERS.length-1-i})">📲 واتساب</button>
-        <button class="btn btn-r" style="font-size:12px;padding:8px 12px" onclick="delOrder(${ORDERS.length-1-i})">🗑️</button>
-      </div>
-    </div>`).join('')||'<div style="color:var(--t3);text-align:center;padding:16px;font-size:13px">لا طلبات</div>';
-
-  document.getElementById('pg-orders').innerHTML=`
-  ${cartBar}
+function r_vload(){
+  const pg = document.getElementById('pg-vload');
+  const stale = VLP.ready && !Object.keys(VLP.cart).length && (Date.now() - VLP.ts) > 120000;
+  if(!VLP.ready || stale){
+    pg.innerHTML = `<div style="padding:30px;text-align:center;color:var(--t3)"><div style="font-size:28px;margin-bottom:8px">⏳</div>جاري تحميل بيانات المخزن...</div>`;
+    if(VLP.loading) return;
+    VLP.loading = true; VLP.ready = false;
+    vlpLoadData().then(res=>{
+      VLP.loading = false;
+      if(res.error){
+        pg.innerHTML = `<div style="padding:24px;text-align:center"><div style="font-size:30px;margin-bottom:8px">⚠️</div><div style="font-weight:700;margin-bottom:6px">${vlpEsc(res.error)}</div><button class="btn btn-b" style="margin-top:10px" onclick="r_vload()">🔄 حاول تاني</button></div>`;
+        return;
+      }
+      if(document.getElementById('pg-vload').classList.contains('on')) r_vload();
+    });
+    return;
+  }
+  pg.innerHTML = `
+  <div id="vlp-bar"></div>
   <div class="sec">
-    <div class="st">📦 المخزان (${allProds.length}) <span class="st-a" onclick="resyncWarehouse()">🔄 مزامنة من سلطان</span></div>
-    <input class="sbox" placeholder="🔍 ابحث..." oninput="filterOP(this.value)" id="op-search">
-    <div id="op-list">${pList}</div>
-  </div>
-  <div class="sec"><div class="st">📜 الطلبات المحفوظة</div>${ordersHtml}</div>`;
+    <div class="st">🚛 حمّل عربيتك <span class="st-a" onclick="vlpRefresh()">🔄 تحديث</span></div>
+    <div style="font-size:11.5px;color:var(--t3);margin-bottom:10px">من: ${vlpEsc(VLP.whName)} — مش هتقدر تحمّل أكتر من المتاح فعليًا بالمخزن</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+      <button class="btn btn-g" onclick="vlpFillStd()">⭐ كمّل حمولتي</button>
+      <button class="btn btn-b" onclick="vlpSaveStd()">📌 اعتمدها حمولتي</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px" id="vlp-chips"></div>
+    <input class="sbox" placeholder="🔍 بحث بالاسم أو الكود..." id="vlp-search" value="${vlpEsc(VLP.q)}" oninput="vlpSearch(this.value)">
+    <div id="vlp-list"></div>
+  </div>`;
+  vlpRenderChips(); vlpRenderList(); vlpUpdateBar();
 }
-function tapOP(id,name,emoji,price){ if(!orderCart.find(c=>c.prodId===id)) orderCart.push({prodId:id,name,emoji,price,qty:1}); const q=document.getElementById('op-search')?.value||''; r_orders(); if(q){document.getElementById('op-search').value=q;filterOP(q);} }
-function adjOC(id,d){ const ci=orderCart.find(c=>c.prodId===id); if(!ci)return; ci.qty=Math.max(0,ci.qty+d); if(ci.qty===0)orderCart=orderCart.filter(c=>c.prodId!==id); const q=document.getElementById('op-search')?.value||''; r_orders(); if(q){document.getElementById('op-search').value=q;filterOP(q);} }
-function clearOC(){ orderCart=[]; r_orders(); }
-function filterOP(q){
-  const list=document.getElementById('op-list'); if(!list)return;
-  const allProds=[...WAREHOUSE]; VAN_STOCK.forEach(p=>{if(!allProds.find(w=>w.name===p.name))allProds.push(p);});
-  const found=q?allProds.filter(p=>p.name.includes(q)||p.name.toLowerCase().includes(q.toLowerCase())):allProds;
-  list.innerHTML=found.map(p=>{
-    const ci=orderCart.find(c=>c.prodId===p.id);
-    return `<div class="prow ${ci?'sel':''}" onclick="tapOP('${p.id}','${p.name.replace(/'/g,"\\'")}','${p.emoji||'📦'}',${p.price})">
-      <div class="pemoji">${prodVisualHtml(p)}</div>
-      <div class="pinfo"><div class="pname">${p.name}</div><div class="pprice">${fmt(p.price)} ج</div></div>
-      ${ci?`<div class="qpill"><button onclick="event.stopPropagation();adjOC('${p.id}',-1)">−</button><span>${ci.qty}</span><button onclick="event.stopPropagation();adjOC('${p.id}',1)">+</button></div>`:
-      `<div style="background:var(--bg4);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--t2);border:1px solid var(--bdr)">اختر</div>`}
-    </div>`;
-  }).join('')||'<div style="color:var(--t3);text-align:center;padding:12px">لا نتائج</div>';
+
+function vlpRefresh(){
+  if(Object.keys(VLP.cart).length && !confirm('التحديث هيمسح الأصناف اللي اخترتها. تكمّل؟')) return;
+  VLP.cart = {}; VLP.ready = false; r_vload();
 }
-function openOrderConfirm(){
-  if(!orderCart.length){toast('السلة فاضية','err');return;}
-  const total=orderCart.reduce((a,c)=>a+c.price*c.qty,0);
-  const lines=orderCart.map(c=>`<div class="row"><span class="rl">${c.emoji||'📦'} ${c.name}×${c.qty}</span><span class="rv cb">${fmt(c.price*c.qty)} ج</span></div>`).join('');
+
+function vlpRenderChips(){
+  const box = document.getElementById('vlp-chips'); if(!box) return;
+  const chips = [['all','الكل'],['van','على عربيتي'],['short','الناقص عن حمولتي']];
+  box.innerHTML = chips.map(([k,l])=>`<button class="vchip ${VLP.filter===k?'on':''}" onclick="vlpSetFilter('${k}')">${l}</button>`).join('');
+}
+function vlpSetFilter(k){ VLP.filter = k; vlpRenderChips(); vlpRenderList(); }
+function vlpSearch(v){ VLP.q = v||''; vlpRenderList(); }
+
+function vlpVisible(){
+  const q = (VLP.q||'').trim().toLowerCase();
+  return VLP.products.filter(p=>{
+    const avail = VLP.stock[p.id]||0, onVan = VLP.van[p.id]||0, std = VLP.std[p.id]||0;
+    if(!(avail>0 || onVan>0 || std>0 || VLP.cart[p.id])) return false;   // مفيش رصيد ولا له علاقة بالمندوب
+    if(VLP.filter==='van' && !(onVan>0)) return false;
+    if(VLP.filter==='short' && !(std>onVan)) return false;
+    if(q && !((p.name||'').toLowerCase().includes(q) || String(p.code||'').toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function vlpRow(p){
+  const avail = VLP.stock[p.id]||0, onVan = VLP.van[p.id]||0, std = VLP.std[p.id]||0, q = VLP.cart[p.id]||0;
+  const img = p.images && p.images[0];
+  const unit = p.unit ? ' '+vlpEsc(p.unit) : '';
+  const info = `متاح: ${fmt(avail)}${unit} • على عربيتك: ${fmt(onVan)}` + (std ? ` • حمولتك: ${fmt(std)}` : '');
+  const right = q>0
+    ? `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+         <div class="qpill"><button onclick="event.stopPropagation();vlpAdj('${p.id}',-1)">−</button><input class="qin" type="number" inputmode="decimal" min="0" max="${avail}" step="any" value="${q}" onclick="event.stopPropagation()" onchange="vlpSetQty('${p.id}',this.value)"><button onclick="event.stopPropagation();vlpAdj('${p.id}',1)">+</button></div>
+         <span class="vall" onclick="event.stopPropagation();vlpSetQty('${p.id}',${avail})">الكل (${fmt(avail)})</span>
+       </div>`
+    : `<div class="vpick">اختر</div>`;
+  return `<div class="prow ${q>0?'sel':''} ${avail<=0?'out':''}" id="vlr-${p.id}" onclick="vlpTap('${p.id}')">
+    <div class="pemoji">${prodVisualHtml({img, emoji:'📦'})}</div>
+    <div class="pinfo"><div class="pname" style="white-space:normal;line-height:1.35;font-size:14px">${vlpEsc(p.name)}</div><div class="pavail">${info}</div></div>
+    ${right}
+  </div>`;
+}
+
+function vlpRenderList(){
+  const box = document.getElementById('vlp-list'); if(!box) return;
+  const list = vlpVisible();
+  box.innerHTML = list.map(vlpRow).join('') || `<div style="text-align:center;color:var(--t3);padding:24px;font-size:13px">لا توجد نتائج</div>`;
+}
+
+function vlpUpdateRow(pid){
+  const el = document.getElementById('vlr-'+pid);
+  if(el){
+    const q = VLP.cart[pid]||0, inp = el.querySelector('.qin');
+    if(q>0 && inp){ inp.value = q; el.classList.add('sel'); }          // نفس الصف يفضل زي ما هو (من غير ما نضيّع الفوكس)
+    else { const p = VLP.products.find(x=>x.id===pid); if(p) el.outerHTML = vlpRow(p); }
+  }
+  vlpUpdateBar();
+}
+
+function vlpUpdateBar(){
+  const bar = document.getElementById('vlp-bar'); if(!bar) return;
+  const ids = Object.keys(VLP.cart);
+  const pieces = ids.reduce((a,id)=>a+VLP.cart[id],0);
+  bar.innerHTML = ids.length ? `
+  <div style="background:linear-gradient(135deg,var(--bg4),var(--bg5));border:2px solid var(--blue);border-radius:13px;padding:12px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <div><div style="font-size:20px;font-weight:900;color:var(--blue)">${fmt(pieces)} قطعة</div><div style="font-size:12px;color:var(--t2)">${ids.length} صنف</div></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-r" style="padding:8px 12px" onclick="vlpClear()">🗑️</button>
+      <button class="btn" style="padding:8px 16px;background:var(--blue);color:#000;font-weight:900;border-radius:12px" onclick="vlpReview()">تأكيد التحميل 📥</button>
+    </div>
+  </div>` : `<div style="background:var(--bg3);border-radius:12px;padding:12px;text-align:center;color:var(--t3);font-size:13px;margin-bottom:12px;border:1px dashed var(--bdr)">اختر الأصناف اللي عايز تحمّلها 👇</div>`;
+}
+
+function vlpTap(pid){
+  if(VLP.cart[pid]) return;                       // لو مختار، التعديل من الأزرار
+  const avail = VLP.stock[pid]||0;
+  if(avail<=0) return;
+  vlpSetQty(pid, Math.min(1, avail));
+}
+function vlpSetQty(pid, val){
+  const avail = VLP.stock[pid]||0;
+  let q = parseFloat(val)||0;
+  if(q>avail){ q = avail; toast('مفيش متاح أكتر من كده بالمخزن','err'); }
+  if(q<=0) delete VLP.cart[pid]; else VLP.cart[pid] = q;
+  vlpUpdateRow(pid);
+}
+function vlpAdj(pid, d){ vlpSetQty(pid, (VLP.cart[pid]||0)+d); }
+function vlpClear(){ VLP.cart = {}; vlpRenderList(); vlpUpdateBar(); }
+
+// ⭐ كمّل حمولتي: الفرق بين الحمولة القياسية واللي على العربية دلوقتي، في حدود المتاح بالمخزن
+function vlpFillStd(){
+  if(VLP.stdMissing){ toast('الحمولة القياسية لسه مش مفعّلة — كلّم الأدمن','err'); return; }
+  if(!Object.keys(VLP.std).length){ toast('لسه ما اعتمدتش حمولتك — حمّل بالشكل اللي يريحك ثم دوس 📌 اعتمدها حمولتي','err'); return; }
+  let added = 0, short = 0;
+  VLP.cart = {};
+  Object.entries(VLP.std).forEach(([pid,target])=>{
+    const need = target - (VLP.van[pid]||0);
+    if(need<=0) return;
+    const q = Math.min(need, VLP.stock[pid]||0);
+    if(q>0){ VLP.cart[pid] = q; added++; }
+    if(q<need) short++;
+  });
+  vlpRenderList(); vlpUpdateBar();
+  if(added) toast(`اتضاف ${added} صنف لحمولتك${short?` — و${short} صنف ناقص أو مش كفاية بالمخزن`:''}`,'ok');
+  else toast(short ? 'الأصناف الناقصة مش متاحة بالمخزن دلوقتي' : 'عربيتك كاملة ✅ مفيش ناقص');
+}
+
+// 📌 اعتمدها حمولتي: الحمولة القياسية = اللي هتبقى على عربيتك بعد التحميل (وبتستبدل القديمة)
+function vlpSaveStd(){
+  if(VLP.stdMissing){ toast('الحمولة القياسية لسه مش مفعّلة — كلّم الأدمن','err'); return; }
+  const res = {};
+  Object.entries(VLP.van).forEach(([id,q])=>{ if(q>0) res[id]=q; });
+  Object.entries(VLP.cart).forEach(([id,q])=>{ res[id]=(res[id]||0)+q; });
+  const ids = Object.keys(res);
+  if(!ids.length){ toast('مفيش حاجة تعتمدها — عربيتك فاضية','err'); return; }
+  VLP.pendingStd = res;
+  const pieces = ids.reduce((a,id)=>a+res[id],0);
+  const had = Object.keys(VLP.std).length;
+  // أصناف كميتها الجديدة أقل من القديمة (مثلاً لو المخزن مكانش كفاية وقت "كمّل حمولتي") أو اتشالت خالص
+  const lowered = Object.keys(VLP.std).filter(id => (res[id]||0) < VLP.std[id]).length;
   openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:16px;font-weight:900;color:var(--blue)">📋 تأكيد الطلب</div><span class="m-close" onclick="closeModal()">✕</span>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:900">📌 اعتماد حمولتي القياسية</div><span class="m-close" onclick="closeModal()">✕</span>
     </div>
-    <div class="sec" style="margin-bottom:10px;max-height:180px;overflow-y:auto">${lines}</div>
-    <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg3);border-radius:12px;padding:13px;margin-bottom:12px;border:2px solid var(--blue)">
-      <span style="color:var(--t2)">إجمالي الطلب</span><span style="font-size:24px;font-weight:900;color:var(--blue)">${fmt(total)} ج</span>
+    <div style="font-size:13.5px;line-height:1.8;margin-bottom:14px">
+      الحمولة القياسية هتبقى = اللي هتبقى على عربيتك بعد التحميل:<br>
+      <b>${ids.length} صنف — ${fmt(pieces)} قطعة</b>
+      ${had?`<br><span style="color:var(--gold)">⚠️ دي هتستبدل حمولتك القياسية القديمة (${had} صنف).</span>`:''}
+      ${lowered?`<br><span style="color:var(--orange)">⚠️ ${lowered} صنف كميته هتقل عن حمولتك القديمة (أو هيتشال). لو ده مش المقصود دوس إلغاء وحمّل الناقص الأول.</span>`:''}
     </div>
-    <div class="ig"><div class="il">العميل / المحل</div><input type="text" id="ord-cust" class="ifield" placeholder="اختياري"></div>
-    <div class="ig" style="margin-bottom:14px"><div class="il">ملاحظة</div><input type="text" id="ord-note" class="ifield" placeholder="اختياري"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <button class="btn btn-xl" style="background:var(--blue);color:#000;border-radius:16px;font-family:Cairo,sans-serif;font-weight:900" onclick="submitOrder(true)">📲 واتساب</button>
-      <button class="btn btn-b btn-xl" onclick="submitOrder(false)">💾 حفظ فقط</button>
+      <button class="btn btn-b btn-xl" onclick="closeModal()">إلغاء</button>
+      <button class="btn btn-g btn-xl" onclick="vlpDoSaveStd()">✅ اعتماد</button>
     </div>`);
 }
-function submitOrder(wa){
-  const custName=document.getElementById('ord-cust')?.value.trim()||'';
-  const note=document.getElementById('ord-note')?.value.trim()||'';
-  const total=orderCart.reduce((a,c)=>a+c.price*c.qty,0);
-  const order={id:uid(),date:TODAY,custName,note,lines:orderCart.map(c=>({...c})),sent:false,ts:Date.now()};
-  if(wa){
-    let msg=`📋 *طلب بضاعة — ${CFG?.name||'المندوب'}*\n📅 ${TODAY}\n${custName?'🏪 '+custName+'\n':''}\n`;
-    orderCart.forEach(c=>{ msg+=`${c.emoji||'📦'} ${c.name} × ${c.qty} — ${fmt(c.price*c.qty)} ج\n`; });
-    msg+=`\n💰 *الإجمالي: ${fmt(total)} ج*`; if(note) msg+=`\n📝 ${note}`;
-    window.open(`https://wa.me/201284579261?text=${encodeURIComponent(msg)}`,'_blank');
-    order.sent=true;
-  }
-  ORDERS.push(order); LS.s('orders',ORDERS);
-  orderCart=[]; closeModal(); toast(wa?'✅ واتساب + حفظ':'✅ تم الحفظ'); r_orders();
+async function vlpDoSaveStd(){
+  if(!navigator.onLine){ toast('محتاج اتصال بالإنترنت','err'); return; }
+  const res = VLP.pendingStd; if(!res) return;
+  const items = Object.entries(res).map(([product_id,qty])=>({product_id, qty}));
+  const { error } = await sb.rpc('fn_save_standard_load', { p_items: items });
+  if(error){ toast('خطأ: '+error.message,'err'); return; }
+  VLP.std = { ...res }; VLP.pendingStd = null;
+  closeModal(); toast('✅ اتعتمدت حمولتك القياسية','ok');
+  vlpRenderList();
 }
-function resendOrder(i){
-  const o=ORDERS[i]; if(!o)return;
-  const total=o.lines.reduce((a,l)=>a+l.price*l.qty,0);
-  let msg=`📋 *طلب بضاعة — ${CFG?.name||'المندوب'}*\n📅 ${o.date}\n${o.custName?'🏪 '+o.custName+'\n':''}\n`;
-  o.lines.forEach(l=>{ msg+=`${l.emoji||'📦'} ${l.name} × ${l.qty} — ${fmt(l.price*l.qty)} ج\n`; });
-  msg+=`\n💰 *الإجمالي: ${fmt(total)} ج*`; if(o.note) msg+=`\n📝 ${o.note}`;
-  ORDERS[i].sent=true; LS.s('orders',ORDERS);
-  window.open(`https://wa.me/201284579261?text=${encodeURIComponent(msg)}`,'_blank');
-  r_orders();
+
+// مراجعة الأصناف + PIN + التنفيذ
+function vlpReview(){
+  const ids = Object.keys(VLP.cart);
+  if(!ids.length){ toast('اختار صنف واحد على الأقل','err'); return; }
+  const pieces = ids.reduce((a,id)=>a+VLP.cart[id],0);
+  const lines = ids.map(id=>{
+    const p = VLP.products.find(x=>x.id===id);
+    return `<div class="row"><span class="rl">${vlpEsc(p?.name||id)}</span><span class="rv cb">× ${fmt(VLP.cart[id])}</span></div>`;
+  }).join('');
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:900;color:var(--blue)">🚛 مراجعة التحميل</div><span class="m-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="sec" style="margin-bottom:10px;max-height:200px;overflow-y:auto">${lines}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg3);border-radius:12px;padding:12px;margin-bottom:12px;border:2px solid var(--blue)">
+      <span style="color:var(--t2)">${ids.length} صنف</span><span style="font-size:22px;font-weight:900;color:var(--blue)">${fmt(pieces)} قطعة</span>
+    </div>
+    <div style="text-align:center">
+      <div style="font-weight:700;margin-bottom:8px">🔒 أدخل PIN التحميل للتأكيد</div>
+      <input type="password" inputmode="numeric" id="vlpPin" maxlength="8" placeholder="••••"
+        style="width:140px;text-align:center;font-size:22px;letter-spacing:6px;padding:10px;border-radius:10px;border:1.5px solid var(--bdr);background:var(--bg3);color:var(--text);font-family:inherit">
+      <div id="vlpPinErr" style="color:var(--red);font-size:12px;margin-top:8px;min-height:16px"></div>
+    </div>
+    <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn btn-b btn-xl" onclick="closeModal()">رجوع</button>
+      <button class="btn btn-g btn-xl" id="vlpConfirmBtn" onclick="vlpConfirmLoad()">✅ تأكيد التحميل</button>
+    </div>`);
+  setTimeout(()=>document.getElementById('vlpPin')?.focus(), 80);
 }
-function delOrder(i){ ORDERS.splice(i,1); LS.s('orders',ORDERS); r_orders(); }
+
+async function vlpConfirmLoad(){
+  if(VLP.busy) return;
+  const errEl = document.getElementById('vlpPinErr');
+  const btn = document.getElementById('vlpConfirmBtn');
+  const fail = msg => { if(errEl) errEl.textContent = msg; if(btn){ btn.disabled=false; btn.textContent='✅ تأكيد التحميل'; } VLP.busy = false; };
+  const pin = (document.getElementById('vlpPin')?.value||'').trim();
+  if(!pin){ if(errEl) errEl.textContent='اكتب الـPIN'; return; }
+  if(!navigator.onLine){ fail('التحميل محتاج اتصال بالإنترنت'); return; }
+  VLP.busy = true;
+  if(btn){ btn.disabled=true; btn.textContent='⏳ جاري التحقق...'; }
+  try{
+    const { data: repRow } = await sb.from('sales_reps').select('van_load_pin').eq('id', REP.id).maybeSingle();
+    if(!repRow?.van_load_pin){ fail('التحميل الذاتي لسه مش مفعّل ليك — كلّم الأدمن يحدّدلك PIN'); return; }
+    if(repRow.van_load_pin !== pin){ fail('PIN غلط — حاول تاني'); return; }
+    // إعادة التحقق من الرصيد لحظيًا قبل التنفيذ — منعًا لأي تغيّر من وقت ما اخترت
+    const pids = Object.keys(VLP.cart);
+    const { data: fresh } = await sb.from('inventory_stock').select('product_id,qty').eq('warehouse_id', VLP.whId).in('product_id', pids);
+    const fm = {}; (fresh||[]).forEach(s=>{ fm[s.product_id] = Number(s.qty)||0; });
+    for(const pid of pids){
+      if(VLP.cart[pid] > (fm[pid]||0)){
+        const pname = VLP.products.find(p=>p.id===pid)?.name || pid;
+        fail(`الرصيد اتغيّر — "${pname}" بقى متاح أقل من اللي طلبته`);
+        return;
+      }
+    }
+    const day = new Date().toISOString().slice(0,10);
+    const { count } = await sb.from('van_stock_loads').select('id',{count:'exact',head:true}).eq('rep_id', REP.id).eq('load_date', day);
+    const { data: loadRow, error: loadErr } = await sb.from('van_stock_loads').insert({
+      load_no: 'VL-'+Date.now(), warehouse_id: VLP.whId, rep_id: REP.id,
+      load_date: day, load_sequence: (count||0)+1,
+      notes: 'تحميل ذاتي من تطبيق مندوب سلطان', created_by: REP.id,
+    }).select('id').single();
+    if(loadErr) throw loadErr;
+    const itemRows = pids.map(pid=>({ load_id: loadRow.id, product_id: pid, qty: VLP.cart[pid],
+      unit_name: VLP.products.find(p=>p.id===pid)?.unit || null }));
+    const { error: itemsErr } = await sb.from('van_stock_load_items').insert(itemRows);
+    if(itemsErr){ await sb.from('van_stock_loads').delete().eq('id', loadRow.id); throw itemsErr; }
+
+    closeModal(); VLP.busy = false;
+    toast('✅ اتحمّلت العربية بنجاح ('+pids.length+' صنف)','ok');
+    VLP.cart = {}; VLP.ready = false;                 // نعيد تحميل الأرصدة من السيرفر
+    await syncVanStockFromSultan();
+    if(document.getElementById('pg-vload')?.classList.contains('on')) r_vload();
+    if(document.getElementById('pg-van')?.classList.contains('on')) r_van();
+  }catch(e){ fail('خطأ: '+(e.message||e)); }
+}
 
 // ══════════════════════════════════════════════════════════════════
 // ── MORE PAGE ─────────────────────────────────────────────────────
@@ -4021,7 +4038,7 @@ function r_more(){
   document.getElementById('pg-more').innerHTML=`
   <div class="sec">
     <div class="st">📦 مخزون السيارة</div>
-    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — تقدر تحمّل عربيتك بنفسك من تبويب "🚗 سيارة"، أو الأدمن يحمّلهالك من سلطان ERP</div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">بيتزامن تلقائي من سلطان ERP — تقدر تحمّل عربيتك بنفسك من تبويب "🚛 حمّل"، أو الأدمن يحمّلهالك من سلطان ERP</div>
     ${VAN_STOCK.length?`<div class="al al-teal">✅ مخزون السيارة: ${VAN_STOCK.length} صنف — ${VAN_STOCK.filter(p=>p.qty>0).length} متاح</div>`:'<div class="al al-o">⚠️ مخزون السيارة فارغ — لسه محدش حمّل عربيتك من سلطان</div>'}
     <button class="btn btn-r btn-lg" style="margin-top:10px" onclick="requireAdmin('مسح أصناف اليوم',clearDayProducts)">🗑️ مسح أصناف اليوم 🔐</button>
   </div>
@@ -4271,7 +4288,7 @@ function showSmartReset(){
 
 function doSmartReset(type){
   // Always backup first
-  const data={_v:5,exportDate:new Date().toISOString(),resetType:type,CFG,DAYS,CUSTOMERS,STORES,OFFERS,INV_OFFERS,WAREHOUSE,VAN_STOCK,ORDERS,AUDIT,GOAL};
+  const data={_v:5,exportDate:new Date().toISOString(),resetType:type,CFG,DAYS,CUSTOMERS,STORES,OFFERS,INV_OFFERS,WAREHOUSE,VAN_STOCK,AUDIT,GOAL};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
@@ -4345,7 +4362,7 @@ function safeReadFile(file, mode, onSuccess, onFail){
 // ═══ EXPORT / IMPORT BACKUP JSON ════════════════════════════════
 function doExport(){
   try{
-    const data={_v:5,exportDate:new Date().toISOString(),CFG,DAYS,CUSTOMERS,STORES,OFFERS,INV_OFFERS,WAREHOUSE,VAN_STOCK,ORDERS,AUDIT,GOAL};
+    const data={_v:5,exportDate:new Date().toISOString(),CFG,DAYS,CUSTOMERS,STORES,OFFERS,INV_OFFERS,WAREHOUSE,VAN_STOCK,AUDIT,GOAL};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const filename='sultan_backup_'+TODAY+'.json';
     const url=URL.createObjectURL(blob);
@@ -4378,10 +4395,9 @@ function onBakFile(input){
           if(d.INV_OFFERS){ INV_OFFERS=d.INV_OFFERS; LS.s('invOffers',INV_OFFERS); }
           if(d.WAREHOUSE) { WAREHOUSE=d.WAREHOUSE; LS.s('warehouse',WAREHOUSE); }
           if(d.VAN_STOCK) { VAN_STOCK=d.VAN_STOCK; LS.s('van_stock',VAN_STOCK); }
-          if(d.ORDERS)    { ORDERS=d.ORDERS;       LS.s('orders',ORDERS); }
           if(d.AUDIT)     { AUDIT=d.AUDIT;         LS.s('audit',AUDIT); }
           if(d.GOAL)      { GOAL=d.GOAL;           LS.s('goal',GOAL); }
-          cart=[]; orderCart=[]; activeInvOffer=null;
+          cart=[]; activeInvOffer=null;
           if(CFG){
             document.getElementById('hdr-name').textContent='🚗 '+(CFG.name||'المندوب');
             document.getElementById('hdr-day').textContent=CFG.route||'';
@@ -4422,12 +4438,6 @@ async function syncWarehouseFromSultan(){
     WAREHOUSE = (data||[]).map(p=>({ id:p.id, name:p.name, emoji:'📦', img:(p.images&&p.images[0])||null, price:Number(p.retail_price)||Number(p.wholesale_price)||0 }));
     LS.s('warehouse', WAREHOUSE);
   }catch(e){}
-}
-async function resyncWarehouse(){
-  toast('🔄 جاري المزامنة...');
-  await syncWarehouseFromSultan();
-  toast('✅ اتزامن — '+WAREHOUSE.length+' صنف');
-  r_orders();
 }
 
 // خط السير بقى بيتحدد أساسًا من سلطان ERP — نسحبه هنا كمرجع أساسي بدل
@@ -4538,7 +4548,6 @@ function r_van(){
       </div>
       <div style="display:flex;gap:6px">
         <button class="btn btn-b" style="font-size:12px;padding:6px 12px" onclick="r_van()">🔄 تحديث</button>
-        <button class="btn btn-g" style="font-size:12px;padding:6px 12px" onclick="openVanLoadPicker()">🚗 حمّل عربيتك</button>
       </div>
     </div>
 
